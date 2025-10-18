@@ -1,0 +1,7 @@
+*.csv
+*.xlsx
+*.log
+*.ilp
+*.iis
+*.lp
+*.pyc
