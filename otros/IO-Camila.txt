@@ -1,0 +1,32 @@
+#####################################################################
+######################## Inputs modelo camila #######################
+#####################################################################
+
+=================================================Conjuntos=================================================
+
+G: Grúas del patio.
+B: Bloques de almacenamiento.
+B_I: Bloques de importación.
+B_E: Bloques de exportación.
+T: Períodos del horizonte de planificación.
+S: Segregaciones de contenedores.
+S_E: Segregaciones de exportación.
+S_I: Segregaciones de importación.
+
+=================================================Parametros=================================================
+
+AEbs[B_E, S_E]: Asignaciones iniciales de exportación.
+AIbs[B_I, S_I]: Asignaciones iniciales de importación.
+Gs[S_E]: Contenedores a recibir de exportación.
+DMEst[S_E, T]: Demanda estimada de exportación en cada período.
+DMIst[S_I, T]: Demanda estimada de importación en cada período.
+Cbs[B, S]: Capacidad del bloque B para la segregación S.
+mu: Parámetro de capacidad de los bloques.
+W: Límite de grúas que pueden operar en un bloque.
+K: Períodos mínimos de operación de una grúa en un bloque.
+Rmax: Máximo número de grúas en uso.
+
+
+#####################################################################
+######################## Output modelo camila #######################
+#####################################################################

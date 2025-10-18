@@ -1,0 +1,140 @@
+########################################################################
+######################## Inputs modelo magdalena #######################
+########################################################################
+
+=================================================Conjuntos=================================================
+
+B: Bloques de almacenamiento.
+S: Segregaciones de contenedores.
+T: Períodos del horizonte de planificación.
+
+=================================================Parametros=================================================
+
+C[B]: Capacidad de almacenamiento del bloque B.
+
+VS[B]: Número de bahías en cada bloque B.
+
+VSR[B]: Número de bahías que permiten almacenar segregaciones reefer.
+
+KS[S]: Número máximo de bloques que pueden asignarse a la segregación S.
+
+KI[S]: Número mínimo de bloques que pueden asignarse a la segregación S.
+
+TEU[S]: TEUs asociados a cada segregación S.
+
+-------------D_params--------------
+
+DR[S, T]: Contenedores esperados para asignación en S en T.
+DC[S, T]: Contenedores esperados para embarque en S en T.
+DD[S, T]: Contenedores esperados para descarga en S en T.
+DE[S, T]: Contenedores esperados para despacho en S en T.
+
+-----------------------------------
+
+I0[S, B]: Contenedores en B al inicio del horizonte de planificación.
+
+LC[S, B]: Distancia entre el bloque b y el sitio del muelle donde sera cargada la segregacion s.
+
+LE[B]: Distancia del bloque B al gate.
+
+R[S]: TEUs de contenedores de la segregación s (1 para 20 pies, 2 para 40 pies)
+
+
+
+########################################################################
+######################## Output modelo magdalena #######################
+########################################################################
+
+--------------General--------------
+
+El archivo "General" del CSV generado por el modelo presenta un resumen detallado del comportamiento de cada segregación en cada bloque a lo largo del horizonte de planificación.
+
+Segregación (S)	Código de la segregación de contenedores.
+Bloque (B)	Código del bloque donde se almacena la segregación.
+Periodo (T)	Número del período dentro del horizonte de planificación.
+Recepción (fr[S, B, T])	Número de contenedores recibidos en el bloque B de la segregación S en el período T.
+Carga (fc[S, B, T])	Número de contenedores cargados desde el bloque B hacia los buques en el período T.
+Descarga (fd[S, B, T])	Número de contenedores descargados hacia el bloque B en el período T.
+Entrega (fe[S, B, T])	Número de contenedores despachados desde el bloque B en el período T.
+Asignado (y[S, B, T])	Valor binario que indica si el bloque B fue asignado a la segregación S en el período T (1: sí, 0: no).
+Volumen (TEUs) (i[S, B, T] * TEU[S])	Volumen total de contenedores en el bloque B en términos de TEUs.
+Bahías Ocupadas (v[S, B, T] * TEU[S])	Número de bahías ocupadas en el bloque B por la segregación S.
+BloqueID	Identificador del bloque (mapeo interno).
+SegregaciónID	Identificador de la segregación (mapeo interno).
+Bahías (VS[B])	Número total de bahías disponibles en el bloque B.
+Incremento Bahías	Cambio en el número de bahías ocupadas con respecto al período anterior.
+
+-----------------Ocupacion bloques------------------
+
+El archivo "Ocupación Bloques" en el CSV generado muestra cómo se asignan los bloques de almacenamiento y cómo evoluciona su capacidad y ocupación a lo largo del tiempo.
+
+Segregación (S)	Código de la segregación de contenedores.
+Bloque (B)	Código del bloque de almacenamiento.
+Periodo (T)	Período dentro del horizonte de planificación.
+Capacidad Bloque (C[B] * VS[B] * OS)	Capacidad máxima del bloque en TEUs (considera la cantidad de bahías y la densidad permitida).
+Volumen bloques (TEUs) (i[S, B, T] * TEU[S])	Volumen total de contenedores en el bloque B de la segregación S.
+Cap Patio (sum(C[B] * VS[B] * OS))	Capacidad total del patio de almacenamiento.
+BloqueID	Identificador numérico del bloque (mapa interno).
+SegregaciónID	Identificador numérico de la segregación (mapa interno).
+Bahías (VS[B])	Número total de bahías disponibles en el bloque B.
+
+------------------Total bloques------------------
+
+"Total bloques" muestra el número total de bloques asignados a cada segregación dentro del horizonte de planificación.
+
+Segregación (S)	Código de la segregación de contenedores.
+Total bloques asignadas (k[S])	Número total de bloques asignados a la segregación S durante el horizonte de planificación.
+
+------------------Flujos------------------
+
+El archivo "Flujos" presenta el movimiento de contenedores en los bloques a lo largo del tiempo. Es una de las pestañas más importantes, ya que permite analizar cómo se gestionan las segregaciones en términos de recepción, carga, descarga y entrega.
+
+Segregación (S)	Código de la segregación de contenedores.
+Bloque (B)	Código del bloque donde se almacenan los contenedores.
+Periodo (T)	Período dentro del horizonte de planificación.
+Recepción (fr[S, B, T])	Contenedores recibidos en el bloque B de la segregación S en el período T.
+Carga (fc[S, B, T])	Contenedores cargados desde el bloque B hacia los buques en el período T.
+Descarga (fd[S, B, T])	Contenedores descargados hacia el bloque B en el período T.
+Entregar (fe[S, B, T])	Contenedores despachados desde el bloque B en el período T.
+
+------------------Asignado------------------
+
+El archivo "Asignado" muestra en qué períodos una segregación ha sido efectivamente asignada a un bloque. Esto es clave para entender cuándo y dónde una segregación ha tenido espacio asignado en el patio de almacenamiento.
+
+Segregación (S)	Código de la segregación de contenedores.
+Bloque (B)	Código del bloque de almacenamiento.
+Periodo (T)	Período dentro del horizonte de planificación.
+Asignado (y[S, B, T])	Valor binario (1 si el bloque B ha sido asignado a S en T, 0 si no).
+
+------------------Volumen Bloques------------------
+
+El archivo "Volumen Bloques" muestra la cantidad de contenedores en cada bloque a lo largo del horizonte de planificación. Esto ayuda a visualizar cómo evoluciona la ocupación de los bloques en función de las operaciones de recepción, carga, descarga y entrega.
+
+Segregación (S)	Código de la segregación de contenedores.
+Bloque (B)	Código del bloque donde se almacenan los contenedores.
+Periodo (T)	Período dentro del horizonte de planificación.
+Volumen (i[S, B, T] * TEU[S])	Cantidad total de contenedores almacenados en el bloque B de la segregación S en el período T.
+
+------------------Bahias por Bloques------------------
+
+El archivo "Bahías por Bloque" muestra el número de bahías ocupadas en cada bloque a lo largo del tiempo.
+
+Segregación (S)	Código de la segregación de contenedores.
+Bloque (B)	Código del bloque donde se almacenan los contenedores.
+Periodo (T)	Período dentro del horizonte de planificación.
+Bahías ocupadas (v[S, B, T])	Número de bahías utilizadas en el bloque B por la segregación S en el período T.
+
+------------------Carga min max------------------
+
+El archivo "Carga Min-Max" muestra los valores de carga máxima y mínima en cada período del horizonte de planificación. Este dato es importante para evaluar el balance de carga entre los bloques y verificar si el modelo está distribuyendo equitativamente el trabajo.
+
+Periodo (T)	Período dentro del horizonte de planificación.
+Carga máxima (p[T])	Carga de trabajo máxima registrada en un bloque en el período T.
+Carga mínima (q[T])	Carga de trabajo mínima registrada en un bloque en el período T.
+
+------------------Variacion carga de trabajo------------------
+
+El archivo "Variación Carga de Trabajo" muestra la diferencia entre la carga máxima y mínima en los bloques a lo largo del horizonte de planificación. Este valor indica qué tan equitativamente está distribuido el trabajo en el terminal.
+
+Variación Carga de Trabajo (p[T] - q[T])	Diferencia entre la carga máxima y mínima en los bloques en todos los períodos.
+
