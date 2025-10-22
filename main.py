@@ -12,7 +12,9 @@ from modelo_gruas_minmax import ejecutar_instancias_gruas_minmax  # opcional
 
 # (A) Semanas
 ANIO = 2022
-SEMANAS = ["2022-01-17"]  # lista fija de semanas (ISO lunes)
+
+#"2022-03-07",
+SEMANAS = ["2022-12-05"]  # lista fija de semanas (vacío = auto)
 
 USAR_RANGO = False
 ISO_WEEK_INI = 35
@@ -20,17 +22,17 @@ ISO_WEEK_FIN = 40
 
 # (B) Parámetros generales
 PARTICIPACION = 68
-CRITERIO = "criterio_iii"
+CRITERIO = "criterio_iii" # "criterio_ii" / "criterio_iii"
 OBJETIVO_GRUAS = "maxmin"  # "maxmin" o "minmax"
 TURNOS = list(range(1, 22))  # 1..21
-CAP_MODE = "pila"   # cambiar a "pila" cuando quieras trabajar a nivel pila
+CAP_MODE = "pila"   # cambiar entre "pila" y "bahia"
 
 # (C) Switches de pasos
 EJECUTAR = {
     "instancias_coloracion": False,
     "modelo_coloracion":     False,
     "guardar_csv":           False,
-    "instancias_gruas":      False,
+    "instancias_gruas":      True,
     "modelo_gruas":          True
 }
 

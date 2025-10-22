@@ -389,7 +389,7 @@ def ejecutar_instancias_coloracion(
                 'FeasibilityTol': 1e-5,
                 'OptimalityTol': 1e-8,
                 'IntFeasTol': 1e-5,
-                'TimeLimit': 250,
+                'TimeLimit': 200,
                 'MIPFocus': 1,      # prioriza factibilidad
                 'Heuristics': 0.5,  # más heurística
                 'PumpPasses': 20,   # feasibility pump

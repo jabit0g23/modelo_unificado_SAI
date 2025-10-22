@@ -206,7 +206,7 @@ def build_ex_rtg(B_C, BLOQUES, allowed_pairs):
 def generar_instancias_gruas(semanas, participacion, resultados_dir):
 
     # Cantidad de grúas por tipo
-    N_RTG = 12
+    N_RTG = 14
     N_RS  = 11
 
     # Productividades por tipo (mov/hr)

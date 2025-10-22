@@ -16,8 +16,8 @@ Reglas:
 """
 
 # ==== FLAGS ====
-MODO_TODO_ENTRA = True
-FILTRA_IME = False  # OFF => pasan TODOS los IME
+MODO_TODO_ENTRA = False
+FILTRA_IME = True  # OFF => pasan TODOS los IME
 
 def run_analysis_flujos(semana, criterio_flujos="criterio_ii", debug=True):
     # ---------------------------------------------------------------------------------
@@ -33,10 +33,10 @@ def run_analysis_flujos(semana, criterio_flujos="criterio_ii", debug=True):
     valid_ime_values = BLOQUES_PATIO + [
         'GATE', 'BUQUE', 'IME_DESCONOCIDO',
         'Y-SAI-1', 'Y-SAI-2', 'Y-SAI-M10', 'Y-SAI-ANDEN', 'Y-SAI-???',
-        'PA','Y-SAI-T1100','F1','Y-SAI-RAMP','V-M10','T-BDHC41-TIP-Y',
-        'SK','T-HKFF77-TIP-U', '', 'Y-SAI-3', 'T-PRYS76-TIP-Y',
-        'T-PG2775', 'T-YY4257', 'T-T118', 'Y-SAI-BR',
-        'T-UF2977 (TIP)','T-UF2977-TIP'
+        #'PA','Y-SAI-T1100','F1','Y-SAI-RAMP','V-M10','T-BDHC41-TIP-Y',
+        #'SK','T-HKFF77-TIP-U', '', 'Y-SAI-3', 'T-PRYS76-TIP-Y',
+        #'T-PG2775', 'T-YY4257', 'T-T118', 'Y-SAI-BR',
+        #'T-UF2977 (TIP)','T-UF2977-TIP'
     ]
 
     valid_prefixes = (
