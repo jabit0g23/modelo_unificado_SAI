@@ -8,6 +8,71 @@ import sys
 # Helpers
 # -------------------------------
 
+# Helpers para reparto en 8h
+
+def split_into_8(total: int, mode: str = "uniform", rng=None) -> list[int]:
+    """
+    Reparte 'total' (entero >=0) en 8 horas según 'mode':
+      - 'uniform' : reparto casi parejo (sobrantes a las primeras horas)
+      - 'front'   : todo en la primera hora
+      - 'back'    : todo en la última hora
+      - 'random'  : aleatorio, suma exacta al total
+    """
+    total = int(max(0, 0 if pd.isna(total) else total))
+    if total == 0:
+        return [0] * 8
+
+    if mode == "uniform":
+        q, r = divmod(total, 8)
+        arr = [q] * 8
+        for i in range(r):
+            arr[i] += 1
+        return arr
+    elif mode == "front":
+        arr = [0] * 8
+        arr[0] = total
+        return arr
+    elif mode == "back":
+        arr = [0] * 8
+        arr[-1] = total
+        return arr
+    elif mode == "random":
+        if rng is None:
+            rng = np.random.default_rng()
+        # "stars and bars" entero: cortes uniformes en [0, total]
+        cuts = np.sort(rng.integers(0, total + 1, size=7))
+        parts = np.diff(np.concatenate(([0], cuts, [total])))
+        return parts.tolist()
+    else:
+        raise ValueError(f"split_into_8(): modo no soportado: {mode}")
+
+def expand_totals_to_turn_hours(df_totals: pd.DataFrame,
+                                s_col: str, value_col: str,
+                                s_universe: list[str],
+                                mode: str, rng=None) -> pd.DataFrame:
+    """
+    Convierte totales por segregación de un turno (df_totals: [s_col, value_col])
+    en una tabla larga de 8 horas por segregación (T=1..8, 'val'), según 'mode'.
+    Asegura grid completo (s_universe × T=1..8), rellena faltantes con 0.
+    """
+    rows = []
+    for _, r in df_totals.iterrows():
+        s = r[s_col]
+        v = int(0 if pd.isna(r[value_col]) else r[value_col])
+        parts = split_into_8(v, mode=mode, rng=rng)
+        for t, val in enumerate(parts, start=1):
+            rows.append({s_col: s, "T": t, "val": int(val)})
+
+    long = pd.DataFrame(rows) if rows else pd.DataFrame(columns=[s_col, "T", "val"])
+    grid = pd.MultiIndex.from_product([s_universe, range(1, 9)], names=[s_col, "T"]).to_frame(index=False)
+    out = (grid.merge(long, on=[s_col, "T"], how="left")
+                .fillna({"val": 0})
+                .astype({"val": int}))
+    return out
+
+
+# Otros Helpers
+
 def build_compat_df(blocks, colname):
     """Matriz completa de compatibilidad (1 por defecto) en formato largo: b1, b2, <colname>."""
     rows = [{"b1": b1, "b2": b2, colname: 1} for b1 in blocks for b2 in blocks]
@@ -204,6 +269,13 @@ def build_ex_rtg(B_C, BLOQUES, allowed_pairs):
 # Main
 # -------------------------------
 def generar_instancias_gruas(semanas, participacion, resultados_dir):
+    
+    
+    SPLIT_MODE_EXPORT = "uniform"   # opciones: uniform | front | back | random
+    SPLIT_MODE_IMPORT = "uniform"
+    RNG_SEED = 42
+    _rng = np.random.default_rng(RNG_SEED)
+
 
     # Cantidad de grúas por tipo
     N_RTG = 14
@@ -291,20 +363,31 @@ def generar_instancias_gruas(semanas, participacion, resultados_dir):
             df_cargar   = pd.read_excel(file_resultado, sheet_name="Cargar")
             df_entregar = pd.read_excel(file_resultado, sheet_name="Entregar")
             df_recibir  = pd.read_excel(file_resultado, sheet_name="Recibir")
+            df_descargar = pd.read_excel(file_resultado, sheet_name="Descargar")
 
             # normalización común
             df_cargar   = standardize_sheet(df_cargar,   s_low_set, map_segtext_to_code, label_for_log="Cargar")
             df_entregar = standardize_sheet(df_entregar, s_low_set, map_segtext_to_code, label_for_log="Entregar")
             df_recibir  = standardize_sheet(df_recibir,  s_low_set, map_segtext_to_code, label_for_log="Recibir")
+            df_descargar = standardize_sheet(df_descargar, s_low_set, map_segtext_to_code, label_for_log="Descargar")
 
-            for dfx, name in [(df_cargar, "Cargar"), (df_entregar, "Entregar"), (df_recibir, "Recibir")]:
+            for dfx, name in [(df_cargar, "Cargar"), (df_entregar, "Entregar"),
+                            (df_recibir, "Recibir"), (df_descargar, "Descargar")]:
                 if "Periodo" in dfx.columns:
                     dfx["Periodo"] = coerce_numeric(dfx["Periodo"]).astype("Int64")
 
+            #! borrar en algun momento
             # asegurar columnas numéricas
             if "Recibir" not in df_recibir.columns:
-                raise ValueError("Hoja 'Recibir' (resultados) no tiene columna 'Recibir'.")
+                raise ValueError("Hoja 'Recibir' (resultados) no tiene columna 'Recibir'.")  
             df_recibir["Recibir"] = coerce_numeric(df_recibir["Recibir"]).fillna(0).astype(int)
+            
+            # Asegura columnas numéricas esperadas
+            if "Cargar" in df_cargar.columns:
+                df_cargar["Cargar"] = coerce_numeric(df_cargar["Cargar"]).fillna(0).astype(int)
+            if "Descargar" in df_descargar.columns:
+                df_descargar["Descargar"] = coerce_numeric(df_descargar["Descargar"]).fillna(0).astype(int)
+            #! hasta aqui
 
             # Volumen bloques (TEUs)
             SHEET_VOLUMEN = "Volumen bloques (TEUs)"
@@ -461,34 +544,37 @@ def generar_instancias_gruas(semanas, participacion, resultados_dir):
                            .astype({"Entregar": int})
                            .rename(columns={"Bloque": "B_I", "S_low": "S_I", "Entregar": "EIbs"})
                            .sort_values(["B_I", "S_I"]))
+            
+            
+            # ==========================
+            # DMEst / DMIst desde RESULTADOS por turno (reparto 8h)
+            # ==========================
 
-            # ---- DMEst (demanda de cargar export dentro del turno)
-            exp = dpar.query("@h_ini <= T <= @h_fin and S_low in @df_S_E.S_low").copy()
-            if not exp.empty:
-                exp["T_rel"] = exp["T"] - h_ini + 1
-                DMEst_calc = exp[["S_low", "T_rel", "DC"]].rename(
-                    columns={"S_low": "S_E", "T_rel": "T", "DC": "DMEst"})
-            else:
-                DMEst_calc = pd.DataFrame(columns=["S_E", "T", "DMEst"])
-            DMEst = (pd.MultiIndex.from_product([df_S_E.S_low.unique(), range(1, 9)],
-                                                names=["S_E", "T"]).to_frame(index=False)
-                     .merge(DMEst_calc, on=["S_E", "T"], how="left")
-                     .fillna({"DMEst": 0})
-                     .astype({"DMEst": int}))
-
-            # ---- DMIst (demanda de descargar import dentro del turno)
-            imp = dpar.query("@h_ini <= T <= @h_fin and S_low in @df_S_I.S_low").copy()
-            if not imp.empty:
-                imp["T_rel"] = imp["T"] - h_ini + 1
-                DMIst_calc = imp[["S_low", "T_rel", "DD"]].rename(
-                    columns={"S_low": "S_I", "T_rel": "T", "DD": "DMIst"})
-            else:
-                DMIst_calc = pd.DataFrame(columns=["S_I", "T", "DMIst"])
-            DMIst = (pd.MultiIndex.from_product([df_S_I.S_low.unique(), range(1, 9)],
-                                                names=["S_I", "T"]).to_frame(index=False)
-                     .merge(DMIst_calc, on=["S_I", "T"], how="left")
-                     .fillna({"DMIst": 0})
-                     .astype({"DMIst": int}))
+            # Totales del turno por segregación (export → Cargar; import → Descargar)
+            tot_cargar_turno = (
+                df_cargar.query("Periodo == @turno and S_low in @df_S_E.S_low")[["S_low", "Cargar"]]
+                .groupby("S_low", as_index=False)["Cargar"].sum()
+            )
+            tot_desc_turno = (
+                df_descargar.query("Periodo == @turno and S_low in @df_S_I.S_low")[["S_low", "Descargar"]]
+                .groupby("S_low", as_index=False)["Descargar"].sum()
+            )
+            
+            # Expandir a 8 horas según heurística
+            dmexp_long = expand_totals_to_turn_hours(tot_cargar_turno,
+                                                     s_col="S_low", value_col="Cargar",
+                                                     s_universe=list(df_S_E["S_low"].unique()),
+                                                     mode=SPLIT_MODE_EXPORT, rng=_rng)
+            DMEst = (dmexp_long.rename(columns={"S_low": "S_E", "val": "DMEst"})
+                                .astype({"DMEst": int}))
+            
+            dmimp_long = expand_totals_to_turn_hours(tot_desc_turno,
+                                                     s_col="S_low", value_col="Descargar",
+                                                     s_universe=list(df_S_I["S_low"].unique()),
+                                                     mode=SPLIT_MODE_IMPORT, rng=_rng)
+            DMIst = (dmimp_long.rename(columns={"S_low": "S_I", "val": "DMIst"})
+                                 .astype({"DMIst": int}))
+            
 
             # ---- Cbs (capacidad de contenedores por unidad asignada)
             bayas_actual = df_bahias[df_bahias["Periodo"] == turno].copy()

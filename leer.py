@@ -27,6 +27,6 @@ def listar_y_guardar_contenido(directorio_raiz, carpetas_excluidas=None, archivo
 # ==== USO ====
 if __name__ == "__main__":
     ruta_proyecto = "."  # o cambia por la ruta completa
-    carpetas_excluir = ["venv", "__pycache__", ".git", "archivos_estaticos", "resultados_generados","resultados_old","resultados_generados_bahia_criterio_ii", "otros", "leer.py", "modelo_gruas_minmax.py", "resultados_generados_pila_criterio_iii", "old_grua_instancia.py", "old_grua_modelo.py"]
+    carpetas_excluir = ["venv", "__pycache__", ".git", "archivos_estaticos", "resultados_generados", "otros", "leer.py", "modelo_gruas_minmax.py"]
 
     listar_y_guardar_contenido(ruta_proyecto, carpetas_excluir, archivo_salida="estructura_proyecto.txt")

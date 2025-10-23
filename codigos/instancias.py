@@ -85,15 +85,20 @@ def generar_instancias(semana, participacion_C, cap_mode="pila"):
     df_distancias = pd.read_excel(os.path.join(estaticos_dir, "Distancias_GranPatio.xlsx"), sheet_name='Distancias')
 
     # ───────────── Utilidades ─────────────
-    def calcular_ajuste_necesario(inventario_inicial, flujos):
-        inventario_acumulado = inventario_inicial
-        inventario_minimo = inventario_inicial
-        flujos_ordenados = flujos.sort_values('shift')
-        for _, flujo in flujos_ordenados.iterrows():
-            cambio_inventario = flujo.get('RECV',0) + flujo.get('DSCH',0) - flujo.get('LOAD',0) - flujo.get('DLVR',0)
-            inventario_acumulado += cambio_inventario
-            inventario_minimo = min(inventario_minimo, inventario_acumulado)
-        return max(0, -inventario_minimo)
+    def calcular_ajuste_necesario(I0, flujos, tipo):
+        f = flujos.sort_values('shift').fillna(0)
+        if tipo == 'expo':
+            delta = f['RECV'] - f['LOAD']
+        elif tipo == 'impo':
+            delta = f['DSCH'] - f['DLVR']
+        else:
+            delta = (f['RECV'] + f['DSCH']) - (f['LOAD'] + f['DLVR'])
+        inv, inv_min = I0, I0
+        for d in delta:
+            inv += d
+            inv_min = min(inv_min, inv)
+        return max(0, -inv_min)
+    
 
     # Heurística para #bloques a usar (escalada por capacidad de unidad)
     def num_bloques_heur(inventario_total, cap_unidad_ref):
@@ -404,6 +409,9 @@ def generar_instancias(semana, participacion_C, cap_mode="pila"):
             s                                    # Desempate estable
         )
     )
+    
+
+
 
 
     inventario_ajustado = {}
@@ -424,7 +432,8 @@ def generar_instancias(semana, participacion_C, cap_mode="pila"):
         ].values[0].sum() if segregacion in inventario_inicial_por_bloque['Segregacion'].values else 0
 
         flujos_seg = df_flujos_all_sbt[df_flujos_all_sbt['criterio'] == segregacion]
-        ajuste_nec = calcular_ajuste_necesario(inv_ini, flujos_seg)
+        tipo = 'expo' if segregacion.startswith('expo') else 'impo' if segregacion.startswith('impo') else 'otro'
+        ajuste_nec = calcular_ajuste_necesario(inv_ini, flujos_seg, tipo)
         inv_total = int(round(inv_ini + ajuste_nec))
 
         es_reefer = 'reefer' in segregacion.lower()
@@ -451,6 +460,12 @@ def generar_instancias(semana, participacion_C, cap_mode="pila"):
     df_B = pd.DataFrame({'B': B})
     df_S = pd.DataFrame({'S': [f'S{i+1}' for i in range(len(segregaciones_finales))], 'Segregacion': segregaciones_finales})
     df_T = pd.DataFrame({'T': T})
+    
+    # Tipo por segregación
+    tipo_por_seg = {
+        seg: ('expo' if seg.startswith('expo') else 'impo' if seg.startswith('impo') else 'otro')
+        for seg in df_S['Segregacion']
+    }
 
     # Exportes coherentes con el modo
     if cap_mode == "bahia":
@@ -483,19 +498,26 @@ def generar_instancias(semana, participacion_C, cap_mode="pila"):
             })
     df_i0 = pd.DataFrame(data_i0)
 
-    # Demandas por turno (21)
+    # Demandas por turno (21) filtradas por tipo
     d_params_data = []
     for _, srow in df_S.iterrows():
         seg = srow['Segregacion']; s_id = srow['S']
+        tipo = tipo_por_seg[seg]
         flujos_seg = df_flujos_all_sbt[df_flujos_all_sbt['criterio'] == seg]
         for t in T:
             f = flujos_seg[flujos_seg['shift'] == t]
-            d_params_data.append({
-                'S': s_id, 'Segregacion': seg, 'T': t,
-                'DR': int(f['RECV'].sum()), 'DC': int(f['LOAD'].sum()),
-                'DD': int(f['DSCH'].sum()), 'DE': int(f['DLVR'].sum())
-            })
+            if tipo == 'expo':
+                DR = int(f['RECV'].sum()); DC = int(f['LOAD'].sum())
+                DD = 0;                       DE = 0
+            elif tipo == 'impo':
+                DR = 0;                       DC = 0
+                DD = int(f['DSCH'].sum());    DE = int(f['DLVR'].sum())
+            else:
+                DR = int(f['RECV'].sum());    DC = int(f['LOAD'].sum())
+                DD = int(f['DSCH'].sum());    DE = int(f['DLVR'].sum())
+            d_params_data.append({'S': s_id, 'Segregacion': seg, 'T': t, 'DR': DR, 'DC': DC, 'DD': DD, 'DE': DE})
     d_params = pd.DataFrame(d_params_data)
+    
 
     # Demandas a 168h
     df_flujos_168h_filtrado = df_flujos_168h[df_flujos_168h['Segregacion'].isin(segregaciones_finales)]
@@ -572,7 +594,14 @@ def generar_instancias(semana, participacion_C, cap_mode="pila"):
         dsch = int(fseg['DSCH'].sum()); dlvr = int(fseg['DLVR'].sum())
         inv_adj = int(sum(inventario_ajustado.get(seg, [0]*len(B))))
         ajuste = int(ajustes.get(seg, 0))
-        inv_fin = max(0, inv_adj + recv + dsch - load - dlvr)
+        tipo = tipo_por_seg[seg]
+        if tipo == 'expo':
+            inv_fin = max(0, inv_adj + recv - load)
+        elif tipo == 'impo':
+            inv_fin = max(0, inv_adj + dsch - dlvr)
+        else:
+            inv_fin = max(0, inv_adj + recv + dsch - load - dlvr)
+        
 
         razon = obtener_razon_detallada(seg, load_criterios, dsch_criterios, recv_criterios, dlvr_criterios,
                                         df_flujos_all_sb, inventario_inicial_por_bloque, segregaciones_finales)

@@ -14,7 +14,7 @@ from modelo_gruas_minmax import ejecutar_instancias_gruas_minmax  # opcional
 ANIO = 2022
 
 #"2022-03-07",
-SEMANAS = ["2022-12-05"]  # lista fija de semanas (vacío = auto)
+SEMANAS = ["2022-03-07"]  # lista fija de semanas (vacío = auto)
 
 USAR_RANGO = False
 ISO_WEEK_INI = 35
@@ -29,9 +29,9 @@ CAP_MODE = "pila"   # cambiar entre "pila" y "bahia"
 
 # (C) Switches de pasos
 EJECUTAR = {
-    "instancias_coloracion": False,
-    "modelo_coloracion":     False,
-    "guardar_csv":           False,
+    "instancias_coloracion": True,
+    "modelo_coloracion":     True,
+    "guardar_csv":           True,
     "instancias_gruas":      True,
     "modelo_gruas":          True
 }
