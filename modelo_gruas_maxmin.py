@@ -450,7 +450,7 @@ def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instan
                 "Heuristics":  0.10,
                 "Seed":        42,
                 "Method":      2,
-                "LogToConsole": 1,
+                "LogToConsole": 0,
             }
             if base["Threads"] >= 4:
                 base["ConcurrentMIP"] = 1

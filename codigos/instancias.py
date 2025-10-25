@@ -7,16 +7,15 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-def generar_instancias(semana, participacion_C, cap_mode="pila"):
+def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, cap_mode="pila"):
     """
     cap_mode:
       - 'bahia' -> unidad = bahía
       - 'pila'  -> unidad 20' = pila; unidad 40' = par de pilas contiguas (adyacencia estricta)
     """
-    base_dir_script_actual = os.path.dirname(os.path.abspath(__file__)) 
-    project_root_dir = os.path.join(base_dir_script_actual, "..")
-    resultados_dir_base = os.path.join(project_root_dir, "resultados_generados")
-    estaticos_dir = os.path.join(project_root_dir, "archivos_estaticos")
+    base_dir_script_actual = os.path.dirname(os.path.abspath(__file__))
+    resultados_dir_base = resultados_dir
+    estaticos_dir = estaticos_dir
 
     # ───────────── Parámetros ─────────────
     B = [

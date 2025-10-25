@@ -19,7 +19,7 @@ Reglas:
 MODO_TODO_ENTRA = False
 FILTRA_IME = True  # OFF => pasan TODOS los IME
 
-def run_analysis_flujos(semana, criterio_flujos="criterio_ii", debug=True):
+def run_analysis_flujos(semana, resultados_dir, estaticos_flujos_dir, criterio_flujos="criterio_ii", debug=True):
     # ---------------------------------------------------------------------------------
     # 1) Parámetros
     # ---------------------------------------------------------------------------------
@@ -31,8 +31,7 @@ def run_analysis_flujos(semana, criterio_flujos="criterio_ii", debug=True):
     ]
 
     valid_ime_values = BLOQUES_PATIO + [
-        'GATE', 'BUQUE', 'IME_DESCONOCIDO',
-        'Y-SAI-1', 'Y-SAI-2', 'Y-SAI-M10', 'Y-SAI-ANDEN', 'Y-SAI-???',
+        'GATE', 'BUQUE', 'Y-SAI-1', 'Y-SAI-2', 'Y-SAI-M10', 'Y-SAI-ANDEN', 'Y-SAI-???',
         #'PA','Y-SAI-T1100','F1','Y-SAI-RAMP','V-M10','T-BDHC41-TIP-Y',
         #'SK','T-HKFF77-TIP-U', '', 'Y-SAI-3', 'T-PRYS76-TIP-Y',
         #'T-PG2775', 'T-YY4257', 'T-T118', 'Y-SAI-BR',
@@ -48,8 +47,11 @@ def run_analysis_flujos(semana, criterio_flujos="criterio_ii", debug=True):
     # 2) Rutas + Lectura
     # ---------------------------------------------------------------------------------
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    resultados_dir = os.path.join(base_dir, "..", "resultados_generados")
-    input_file = os.path.join(resultados_dir, "instancias_magdalena", f"{semana}", f"Flujos_w{semana}.xlsx")
+    resultados_dir = resultados_dir
+    estaticos_flujos_dir = os.path.join(estaticos_flujos_dir, "flujos")
+    #resultados_dir = os.path.join(base_dir, "..", "resultados_generados")
+    #estaticos_flujos_dir = os.path.join(base_dir, "..", "archivos_estaticos", "flujos")
+    input_file = os.path.join(estaticos_flujos_dir, f"Flujos_w{semana}.xlsx")
 
     df = pd.read_excel(input_file)
     df = df.reset_index(drop=True)

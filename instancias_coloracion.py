@@ -1,7 +1,6 @@
 import os
 from datetime import date
 
-from codigos.leer_lineas import extraer_filas_por_fecha
 from codigos.analisis_flujos import run_analysis_flujos
 from codigos.evolucion_turnos import criterioII_a_evolucion
 from codigos.instancias import generar_instancias
@@ -51,11 +50,8 @@ def _resolver_carpeta_estaticos(semana: str, anio: int, criterio: str, estaticos
 def _process_semana(semana, criterio, anio, participacion, resultados_dir, estaticos_dir, todas_semanas, *, cap_mode: str):
     print(f"\n(Generar instancia magdalena) ===== PROCESANDO SEMANA: {semana}  [cap_mode={cap_mode}] =====")
 
-    # 1) Extraer líneas para Flujos_w{semana}.xlsx
-    extraer_filas_por_fecha(semana)
-
     # 2) Análisis de flujos (genera analisis_flujos_w{semana}_0.xlsx)
-    run_analysis_flujos(semana, criterio_flujos=criterio)
+    run_analysis_flujos(semana, resultados_dir=resultados_dir, estaticos_flujos_dir=estaticos_dir,criterio_flujos=criterio,  debug=False)
 
     # 3) Evolución por turnos (CriterioII) → evolucion_turnos_w{semana}.xlsx
     out_sem_dir = os.path.join(resultados_dir, "instancias_magdalena", semana)
@@ -82,7 +78,7 @@ def _process_semana(semana, criterio, anio, participacion, resultados_dir, estat
     # 4) Generación de instancias (pasando cap_mode = 'bahia' | 'tier')
     print("Paso 4: Generando instancias…")
     try:
-        generar_instancias(semana, participacion, cap_mode=cap_mode)
+        generar_instancias(semana, resultados_dir=resultados_dir, estaticos_dir=estaticos_dir, participacion_C=participacion, cap_mode=cap_mode)
         print(f"Generación de instancias completada (cap_mode={cap_mode}).")
     except Exception as e:
         print(f"ADVERTENCIA: Falló la generación de instancias para {semana}: {e}. Continúo con la siguiente.")

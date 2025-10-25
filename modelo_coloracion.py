@@ -90,9 +90,9 @@ def ejecutar_instancias_coloracion(
         resumen_semanal_actual = []
         resultados_segregacion_actual = []
         detalle_movimientos_actual = []
-    
-        directorio_datos_semanal = os.path.join(BASE_DIR, "resultados_generados", "instancias_magdalena", semana_actual)
-        
+
+        directorio_datos_semanal = os.path.join(resultados_dir_script, "instancias_magdalena", semana_actual)
+
         # Asegurar que el directorio exista (principalmente para la salida, ya que la instancia debe existir)
         os.makedirs(directorio_datos_semanal, exist_ok=True)
     
@@ -383,13 +383,13 @@ def ejecutar_instancias_coloracion(
             
             solver = SolverFactory('gurobi')
             solver.options.update({
-                'LogToConsole': 1,
+                'LogToConsole': 0,
                 'LogFile': os.path.join(directorio_datos_semanal, f'gurobi_log_{semana_actual}.log'),
                 'MIPGap': 1e-6,
                 'FeasibilityTol': 1e-5,
                 'OptimalityTol': 1e-8,
                 'IntFeasTol': 1e-5,
-                'TimeLimit': 350,
+                'TimeLimit': 1000,
                 'MIPFocus': 1,      # prioriza factibilidad
                 'Heuristics': 0.5,  # más heurística
                 'PumpPasses': 20,   # feasibility pump
