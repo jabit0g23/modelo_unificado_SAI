@@ -1,8 +1,8 @@
 # metricas.py
 # Recolector de métricas Camila/Magdalena por carpeta principal (vive en .../resultados).
-# - Corrige parseo numérico (respeta notación científica).
-# - Elimina auditoría de min/max.
-# - Agrega lista de subcarpetas (semanas) en resultados_camila que tienen al menos un .iis.ilp.
+# - Produce un EXCEL ordenado con hojas separadas: Camila_Resumen y Magdalena_Promedios.
+# - Produce un CSV aparte SOLO con las semanas que tienen .iis.ilp (plano por fila).
+# - Corrige parseo numérico (respeta notación científica, miles, etc.).
 
 from pathlib import Path
 from typing import Tuple, Optional, List, Dict
@@ -10,6 +10,7 @@ import argparse
 import sys
 import os
 import re
+import csv
 import pandas as pd
 
 IGNORAR_NOMBRES = {"__pycache__", ".git", ".venv", "venv", ".idea", ".vscode"}
@@ -120,13 +121,11 @@ def semanas_con_iis_ilp(dir_camila: Path) -> List[str]:
                 found = True
                 break
         if found:
-            # quita el prefijo si está presente
             nombre = sub.name
             if nombre.startswith("resultados_turno_"):
                 nombre = nombre[len("resultados_turno_"):]
             semanas.append(nombre)
     return semanas
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MAGDALENA
@@ -232,14 +231,34 @@ def magdalena_promedios(dir_magdalena: Path, debug: bool = False) -> Optional[pd
     return prom
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Helpers Excel
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _autosize_columns(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame):
+    try:
+        ws = writer.sheets[sheet_name]
+        for idx, col in enumerate(df.columns, start=1):
+            # largo máximo entre header y valores
+            max_len = max(
+                len(str(col)),
+                *(len(str(v)) for v in df[col].astype(str).values)
+            )
+            # margen
+            ws.column_dimensions[chr(64 + idx)].width = min(max_len + 2, 60)
+        # congelar header
+        ws.freeze_panes = "A2"
+    except Exception:
+        pass
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main / CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="Recolector de resultados Camila/Magdalena por carpeta principal (vive en 'resultados').")
     parser.add_argument("--root", type=str, default=None, help="Directorio raíz (por defecto: carpeta del script).")
-    parser.add_argument("--out_camila", type=str, default="reporte_camila.csv")
-    parser.add_argument("--out_magdalena", type=str, default="reporte_magdalena_promedios.csv")
+    parser.add_argument("--out_excel", type=str, default="reporte_metricas.xlsx", help="Ruta de salida del Excel consolidado.")
+    parser.add_argument("--out_weeks_csv", type=str, default="camila_semanas_con_iis_ilp.csv", help="Ruta del CSV con semanas que tienen .iis.ilp (formato plano).")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -248,10 +267,7 @@ def main():
         print(f"ERROR: la ruta raíz no existe -> {raiz}")
         sys.exit(1)
 
-    principales = []
-    for sub in sorted([p for p in raiz.iterdir() if es_carpeta_valida(p)]):
-        if (sub / "resultados_camila").is_dir() and (sub / "resultados_magdalena").is_dir():
-            principales.append(sub)
+    principales = encontrar_carpetas_principales_en_raiz(raiz, debug=args.debug)
     if args.debug:
         print(f"[DEBUG] Raíz: {raiz}")
         for p in principales:
@@ -259,6 +275,7 @@ def main():
 
     filas_camila: List[Dict] = []
     filas_mag_prom: List[Dict] = []
+    filas_weeks_planas: List[Dict] = []  # ← para el CSV “solo listas”
 
     for principal in principales:
         nombre = principal.name
@@ -271,8 +288,8 @@ def main():
 
         # lista de semanas con al menos un .iis.ilp
         semanas_iis = semanas_con_iis_ilp(dir_camila)
-        semanas_iis_str = "[" + ", ".join(semanas_iis) + "]" if semanas_iis else "[]"
 
+        # (1) Resumen por principal
         filas_camila.append({
             "carpeta_principal": nombre,
             "camila_total_archivos": total,
@@ -280,8 +297,14 @@ def main():
             "camila_count_iis_ilp": c_iis,
             "camila_prop_xlsx": round(prop_xlsx, 6),
             "camila_prop_iis_ilp": round(prop_iis, 6),
-            "camila_semanas_con_iis_ilp": semanas_iis_str,  # lista copiable
         })
+
+        # (2) Plano por semana (para CSV aparte)
+        for sem in semanas_iis:
+            filas_weeks_planas.append({
+                "carpeta_principal": nombre,
+                "semana": sem
+            })
 
         if args.debug:
             print(f"[DEBUG][CAMILA] {nombre}: total={total} xlsx={c_xlsx} iis.ilp={c_iis} semanas_iis={len(semanas_iis)}")
@@ -297,26 +320,69 @@ def main():
                         out[f"prom_{k}"] = float(row[k])
                 filas_mag_prom.append(out)
 
-    # Guardados
+    # ── DataFrames ordenados
     df_camila = pd.DataFrame(filas_camila)
     if not df_camila.empty:
-        df_camila = df_camila.sort_values("carpeta_principal").reset_index(drop=True)
-    df_camila.to_csv(args.out_camila, index=False, encoding="utf-8-sig")
+        col_order_camila = [
+            "carpeta_principal",
+            "camila_total_archivos",
+            "camila_count_xlsx",
+            "camila_count_iis_ilp",
+            "camila_prop_xlsx",
+            "camila_prop_iis_ilp",
+        ]
+        df_camila = df_camila[col_order_camila].sort_values("carpeta_principal").reset_index(drop=True)
 
     df_mag = pd.DataFrame(filas_mag_prom)
     if not df_mag.empty:
-        df_mag["anio"] = pd.to_numeric(df_mag["anio"], errors="coerce").astype("Int64")
-        df_mag = df_mag.sort_values(["carpeta_principal","anio"]).reset_index(drop=True)
-    df_mag.to_csv(args.out_magdalena, index=False, encoding="utf-8-sig")
+        if "anio" in df_mag.columns:
+            df_mag["anio"] = pd.to_numeric(df_mag["anio"], errors="coerce").astype("Int64")
+        # ordenar columnas: carpeta, anio, luego métricas
+        metric_cols = [c for c in df_mag.columns if c.startswith("prom_")]
+        df_mag = df_mag[["carpeta_principal", "anio", *metric_cols]].sort_values(["carpeta_principal","anio"]).reset_index(drop=True)
 
-    # Consola
-    print("\n=== CAMILA (por carpeta principal) ===")
+    df_weeks = pd.DataFrame(filas_weeks_planas)
+    if not df_weeks.empty:
+        df_weeks = df_weeks.sort_values(["carpeta_principal","semana"]).reset_index(drop=True)
+
+    # ── Escrituras
+    # 1) Excel consolidado con hojas separadas
+    with pd.ExcelWriter(args.out_excel, engine="openpyxl") as wr:
+        if not df_camila.empty:
+            df_camila.to_excel(wr, sheet_name="Camila_Resumen", index=False)
+            _autosize_columns(wr, "Camila_Resumen", df_camila)
+        else:
+            pd.DataFrame(columns=[
+                "carpeta_principal","camila_total_archivos","camila_count_xlsx",
+                "camila_count_iis_ilp","camila_prop_xlsx","camila_prop_iis_ilp"
+            ]).to_excel(wr, sheet_name="Camila_Resumen", index=False)
+
+        if not df_mag.empty:
+            df_mag.to_excel(wr, sheet_name="Magdalena_Promedios", index=False)
+            _autosize_columns(wr, "Magdalena_Promedios", df_mag)
+        else:
+            pd.DataFrame(columns=["carpeta_principal","anio"]).to_excel(wr, sheet_name="Magdalena_Promedios", index=False)
+
+    # 2) CSV plano SOLO con semanas con .iis.ilp
+    if df_weeks.empty:
+        # crear CSV con headers igual
+        with open(args.out_weeks_csv, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["carpeta_principal","semana"])
+    else:
+        df_weeks.to_csv(args.out_weeks_csv, index=False, encoding="utf-8-sig")
+
+    # ── Consola
+    print("\n=== CAMILA (Resumen por carpeta principal) ===")
     print(df_camila.to_string(index=False) if not df_camila.empty else "(sin filas)")
 
     print("\n=== MAGDALENA (promedios por año) ===")
     print(df_mag.to_string(index=False) if not df_mag.empty else "(sin filas)")
 
-    print(f"\nArchivos generados:\n - {args.out_camila}\n - {args.out_magdalena}")
+    print("\n=== CAMILA – semanas con .iis.ilp (plano) ===")
+    print(df_weeks.to_string(index=False) if not df_weeks.empty else "(sin filas)")
+
+    print(f"\nArchivos generados:\n - {args.out_excel}\n - {args.out_weeks_csv}")
 
 if __name__ == "__main__":
     main()
