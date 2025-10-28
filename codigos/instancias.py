@@ -8,11 +8,7 @@ from pathlib import Path
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, cap_mode="pila"):
-    """
-    cap_mode:
-      - 'bahia' -> unidad = bahía
-      - 'pila'  -> unidad 20' = pila; unidad 40' = par de pilas contiguas (adyacencia estricta)
-    """
+
     base_dir_script_actual = os.path.dirname(os.path.abspath(__file__))
     resultados_dir_base = resultados_dir
     estaticos_dir = estaticos_dir
@@ -55,6 +51,11 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     # ────────── Derivados de capacidad ──────────
     # Bahía: capacidad por bahía = filas * niveles
     C_POR_BAHIA = {b: ROWS_POR_BLOQUE[b] * NIVELES_POR_BLOQUE[b] for b in B}
+    
+    # Capacidad de referencia de bahía (unidades equivalentes de bahía)
+    C_REF_BAHIA = int(round(np.mean(list(C_POR_BAHIA.values()))))
+    THR_UNIDADES_BAHIA = [4, 8, 12, 17]
+    
 
     # Pila: capacidad por pila (20') = niveles
     C_POR_PILA = {b: NIVELES_POR_BLOQUE[b] for b in B}
@@ -100,14 +101,17 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     
 
     # Heurística para #bloques a usar (escalada por capacidad de unidad)
-    def num_bloques_heur(inventario_total, cap_unidad_ref):
-        # umbrales ~ [4,8,12,17] unidades de cap_unidad_ref
-        thr = [4*cap_unidad_ref, 8*cap_unidad_ref, 12*cap_unidad_ref, 17*cap_unidad_ref]
-        if inventario_total <= thr[0]:   return 1
-        elif inventario_total <= thr[1]: return 2
-        elif inventario_total <= thr[2]: return 3
-        elif inventario_total <= thr[3]: return 4
-        else:                             return 5
+    def num_bloques_heur(inventario_total, _cap_unidad_ref_ignored=None):
+        
+        Cref = max(C_REF_BAHIA, 1)
+        unidades_equiv_bahia = math.ceil(inventario_total / Cref)
+        
+        if unidades_equiv_bahia <= THR_UNIDADES_BAHIA[0]:   return 1
+        elif unidades_equiv_bahia <= THR_UNIDADES_BAHIA[1]: return 2
+        elif unidades_equiv_bahia <= THR_UNIDADES_BAHIA[2]: return 3
+        elif unidades_equiv_bahia <= THR_UNIDADES_BAHIA[3]: return 4
+        else:                                                return 5
+
 
     # ───────── Redistribución por modo ─────────
     def redistribuir_bahia(inventario_total, es_reefer, es_40_pies,
@@ -123,11 +127,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
         def libres_tot(b):  return max(0, BAHIAS_POR_BLOQUE[b] - bahias_oc[b])
         def libres_ree(b):  return max(0, BAHIAS_REEFER_BLOQUE[b] - bahias_reefer_oc[b])
 
-        # capacidad de referencia para heurística (usar media ~ 35 si NIVELES=5 y ROWS≈7)
-        cap_ref = int(round(np.mean([C_POR_BAHIA[b] for b in B])))
-
         orden = sorted(B, key=lambda x: (libres_ree(x) if es_reefer else libres_tot(x), libres_tot(x)), reverse=True)
-        k = min(num_bloques_heur(inventario_total, cap_ref), len(orden))
+        k = min(num_bloques_heur(inventario_total), len(orden))
         usar = orden[:k]
 
         def asignar(b, q):
@@ -181,8 +182,6 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             by_pilas = libres_pilas_ree(b) // 2
             return min(by_pairs, by_pilas)
 
-        cap_ref = int(round(np.mean([NIVELES_POR_BLOQUE[b] for b in B])))  # ~5
-
         if es_40_pies:
             orden = sorted(
                 [b for b in B if (libres_pairs_ree(b) if es_reefer else libres_pairs_tot(b)) > 0],
@@ -201,7 +200,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
         if not orden:
             return inv_aj, pilas_oc, pilas_reefer_oc, pares_oc, pares_reefer_oc
 
-        k = min(num_bloques_heur(inventario_total, cap_ref), len(orden))
+        k = min(num_bloques_heur(inventario_total), len(orden))
+
         usar = orden[:k]
 
         def asignar_40(b, q):

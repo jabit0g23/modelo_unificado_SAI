@@ -175,8 +175,17 @@ def ejecutar_instancias_coloracion(
             model.TEU = Param(model.S, initialize=df['TEU_s'].set_index('S')['TEU'].to_dict())
             model.OS = Param(initialize=1, mutable=True)
             
-            OI_dict = {row.B: 1.0/row.C for _, row in df['C_b'].iterrows()}
-            model.OI = Param(model.B, within=PositiveReals, initialize=OI_dict)
+            C_mediana = float(pd.Series(df['C_b']['C']).astype(float).median())
+            
+            es_pila = C_mediana <= 6.0
+            if es_pila:
+                # En modo 'pila' no imponemos mínimo por turno al abrir/unidad
+                OI_dict = {row.B: 0.0 for _, row in df['C_b'].iterrows()}
+            else:
+                # En modo 'bahía' mantén tu regla original OI=1/C[b]
+                OI_dict = {row.B: 1.0/float(row.C) for _, row in df['C_b'].iterrows()}
+                
+            model.OI = Param(model.B, within=NonNegativeReals, initialize=OI_dict)
             
             #model.OI = Param(initialize=0.0204081632653061)
             model.r = Param(initialize=348)
@@ -389,7 +398,7 @@ def ejecutar_instancias_coloracion(
                 'FeasibilityTol': 1e-5,
                 'OptimalityTol': 1e-8,
                 'IntFeasTol': 1e-5,
-                'TimeLimit': 850,
+                'TimeLimit': 350,
                 'MIPFocus': 1,      # prioriza factibilidad
                 'Heuristics': 0.5,  # más heurística
                 'PumpPasses': 20,   # feasibility pump
