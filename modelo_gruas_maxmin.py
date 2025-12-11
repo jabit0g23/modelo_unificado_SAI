@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 # coding: utf-8
 
+from util import telemetry_pack, append_metrics_row, objective_value_safe
+import time
 import os
 import logging
 import sys
@@ -14,6 +16,8 @@ from pyomo.environ import (
 from pyomo.contrib.iis import write_iis
 
 logger = logging.getLogger("camila_maxmin")
+
+
 
 def _swap_ext(path, new_ext):
     base, _ = os.path.splitext(path)
@@ -51,6 +55,7 @@ def _dump_infeasible_artifacts(model, xlsx_path, logger=None):
 def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instancias, base_resultados):
     for semana in semanas:
         out_dir = os.path.join(base_resultados, f"resultados_turno_{semana}")
+        metrics_csv = os.path.join(base_resultados, "metrics", "metrics_gruas.csv")
         os.makedirs(out_dir, exist_ok=True)
 
         for turno in turnos:
@@ -132,12 +137,6 @@ def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instan
                 initialize={(r['B'], r['S']): r['Cbs'] for r in datos['Cbs'].to_dict('records')},
                 default=0, mutable=True
             )
-
-            # ---------- Parámetros escalares legacy (no usados ya en capacidad) ----------
-            # Se mantienen por compatibilidad, pero la capacidad y FO usan Prod por tipo.
-            m.mu = Param(initialize=datos['mu'].iloc[0,0], mutable=True)   # legacy
-            m.W  = Param(initialize=datos['W' ].iloc[0,0], mutable=True)   # legacy (NO usado)
-            m.K_legacy = Param(initialize=datos['K' ].iloc[0,0], mutable=True)   # legacy (NO usado directo)
 
             # ---------- Límite por bloque W_b ----------
             df_Wb = datos.get('W_b', pd.DataFrame({'B': [], 'W_b': []}))
@@ -391,8 +390,14 @@ def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instan
             # -------------------------
             # 10) Colisiones por bloque (W_b=3 y máx 2 RTG)
             # -------------------------
-            m.max_by_block = Constraint(m.B, m.T,
-                                        rule=lambda m,b,t: sum(m.ygbt[g,b,t] for g in m.G) <= m.Wb[b])
+            def limit_13_1(m, b, t):
+                rtg = sum(m.ygbt[g, b, t] for g in m.GRT)
+                rs  = sum(m.ygbt[g, b, t] for g in m.GRS)
+                return 2*rtg + rs <= 6
+            
+            m.limit_13_1 = Constraint(m.B, m.T, rule=limit_13_1)
+            
+            
             m.max_rtg_block = Constraint(m.B, m.T,
                                          rule=lambda m,b,t: sum(m.ygbt[g,b,t] for g in m.GRT) <= 2)
 
@@ -460,25 +465,56 @@ def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instan
             resultado_xlsx = os.path.join(out_dir, f"resultados_{semana}_{participacion}_T{t2}.xlsx")
 
             # PRIMER SOLVE: factibilidad sin cargar solución
+            t0 = time.time()
             res = solver.solve(m, tee=False, load_solutions=False)
+            t1 = time.time()
+
             term = res.solver.termination_condition
             status = res.solver.status
 
             if term in (TerminationCondition.infeasible, TerminationCondition.infeasibleOrUnbounded):
                 _dump_infeasible_artifacts(m, resultado_xlsx, logger)
+                # Log telemetría incluso infactible
+                meta = {
+                    "modelo": "gruas_maxmin",
+                    "semana": semana,
+                    "turno": int(turno),
+                    "participacion": str(participacion),
+                    "fase": "preload",
+                    "resultado_xlsx": resultado_xlsx,
+                    "resultado_dir": out_dir,
+                }
+                row = telemetry_pack(m, meta=meta, solve_elapsed=t1-t0, res=res, objective=None)
+                append_metrics_row(metrics_csv, row)
                 logger.info("Turno %s completado.", turno)
                 continue
+        
 
             # SEGUNDO SOLVE: cargar solución si existe
+            t2p = time.time()
             res2 = solver.solve(m, tee=False, load_solutions=True)
+            t3 = time.time()
             term2 = res2.solver.termination_condition
             status2 = res2.solver.status
 
             if (term2 in (TerminationCondition.maxTimeLimit, TerminationCondition.maxIterations) or
                 status2 in (SolverStatus.aborted, SolverStatus.unknown)) and not _has_solution(m):
                 _dump_infeasible_artifacts(m, resultado_xlsx, logger)
+                # Log telemetría sin incumbente
+                meta = {
+                    "modelo": "gruas_maxmin",
+                    "semana": semana,
+                    "turno": int(turno),
+                    "participacion": str(participacion),
+                    "fase": "load_fail",
+                    "resultado_xlsx": resultado_xlsx,
+                    "resultado_dir": out_dir,
+                }
+                row = telemetry_pack(m, meta=meta, solve_elapsed=t3-t2p, res=res2, objective=None)
+                append_metrics_row(metrics_csv, row)
                 logger.info("Turno %s completado.", turno)
                 continue
+            
 
             # Exportar Excel (solo valores no nulos)
             df = []
@@ -490,3 +526,18 @@ def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instan
 
             pd.DataFrame(df).to_excel(resultado_xlsx, index=False)
             logger.info("Turno %s completado.", turno)
+            
+            meta = {
+                "modelo": "gruas_maxmin",
+                "semana": semana,
+                "turno": int(turno),
+                "participacion": str(participacion),
+                "fase": "final",
+                "resultado_xlsx": resultado_xlsx,
+                "resultado_dir": out_dir,
+            }
+            
+            obj_val = objective_value_safe(m, obj_name="obj")
+            row = telemetry_pack(m, meta=meta, solve_elapsed=(t1-t0)+(t3-t2p), res=res2, objective=obj_val)
+            append_metrics_row(metrics_csv, row)
+            

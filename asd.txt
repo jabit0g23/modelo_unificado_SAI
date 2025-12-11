@@ -1,0 +1,17 @@
+Bien, necesito ayuda para modificar mis modelos de optimización, actualmente son 2 modelos que se ejecutan secuencialmente en un pipeline, donde un modelo alimenta el siguiente, en especifico, el modelo de magdalena, que es el modelo de coloración, genera las instancias a partir de datos historicos y genera como output la coloracion del patio que utilizará luego el siguiente modelo, el modelo de camila, que es el de asignación de carga de trabajo.
+
+Los modelos originalmente (en especial el modelo de coloracion) estan preparados para trabajar sobre bahias, la dimension de granularidad son las bahias, el modelo evita los remanejos, creando segregaciones que son maneras de agrupar tipos de contenedores, estas segregaciones, se asignan por completo a una bahia, por ejemplo si un bloque como H1, tiene 30 bahias, en esas 30 bahias puede haber como maximo 30 segregaciones distintas.
+
+Considerando que la unidad son las bahias, hay otras dimensiones, como lo son el numero de filas del bloque y la cantidad que se puede apilar hacia arriba, estos 2 son conjuntos, si bien no salen en el modelo, estan disponibles y se usan en la generación de instancias.
+
+Otro aspecto a considerar del modelo son las TEU. hay con tenedores de 1 TEU y de 2 TEU, un contenedor de una TEU ocupa una bahia, mientras que uno de 2 TEU ocupa 2 bahias.
+
+Mi modelo de bahias funciona completamente bien, y sin problemas, sin embargo me gustaria tener otra version de mis modelos de optimización pero que sean en vez de bahias, pilas, me explico.
+
+una bahia tiene "num_filas" = numero de pilas, me gustaria modificar mi modelo para que en cada pila se asigne solo una segregación, (como era anteriormente para las bahias) pero es más complejo de lo que suena, ya que debemos seguir manteniendo las bahias, ya que hay que respetar eso de que un contenedor de 1 o 2 teu, ocupa 1 o 2 bahias, pero quiero añadir ese adicional de que en una bahia pueda haber segregaciones variadas (siempre y cuando sean del mismo teu).
+
+hace un tiempo probe intentando modificar solo la logica de la generacion de instancias, haciendo que haya num_bahias x num_filas = num_pilas del bloque y disminiyendo la capacidad de la bahia simulando que ahora eran pilas, pero no funciono muy bien ya que se perdia la logica de que en una bahia (7 filas) haya solo una segregacion ya que ahora era más bien solo una lista enorme de bahias, además me probocaba errores con las bahias reefer, por lo que quiero una solucion nueva y distinta respecto a lo que tenia, quiero arreglar el error e implementar las pilas a nivel del modelo más que de las segregaciones. 
+
+en los archivos que te comparto, por un lado tenemos el archivo union_modelo que es un resumen de mi pipeline y con algunos cambios que he estado haciendo, por ejemplo modificando un poco el modelo de gruas, con nuevas restricciones y añadiendo otro tipo de gruas. los otros 2 archivos, que son los más largos, los archivos de las memorias, son los archivos originales de la implementacion de ambos modelos, las respectivas tesis de cada uno, por si necesitas más contexto, etc.
+
+Lo que necesito que me ayudes es a lo que te plantee, que me ayudes, principalmente con el modelo de coloracion que creo que es el unico que necesitaria cambios, revisar cada una de las restricciones y ver cuales necesitarian cambios para su version de "modelo de pilas" que restricciones ya existentes deberiamos modificar, etc, considerando los supuestos que necesitemos mientras esten bien definidos y explicados.

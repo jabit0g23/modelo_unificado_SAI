@@ -4,6 +4,8 @@ import logging, sys
 from pyomo.opt import TerminationCondition
 import pandas as pd
 import os
+from util import telemetry_pack, append_metrics_row, objective_value_safe
+import time
 
 from pyomo.opt import SolverStatus, TerminationCondition as TC
 
@@ -19,34 +21,54 @@ import logging, sys, os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("magdalena")
 
-def _has_incumbent(res):
+
+
+def _has_incumbent(res, model=None):
     tc = res.solver.termination_condition
     st = res.solver.status
 
-    # Si el solver adjuntó soluciones, úsalo como señal definitiva
+    # 1) Pyomo-style (cuando sí viene algo en res.solution)
     has_sol = hasattr(res, "solution") and res.solution and len(res.solution) > 0
 
-    # Condiciones que NO tienen solución
+    # 2) Model-aware: si load_solutions=True, los valores están en las Vars
+    if not has_sol and (model is not None):
+        try:
+            # toma una variable y revisa si tiene algún valor distinto de None
+            for v in model.component_data_objects(Var, active=True, descend_into=True):
+                if v.value is not None:
+                    has_sol = True
+                    break
+        except Exception:
+            pass
+
+    # Casos sin solución
+    from pyomo.opt import TerminationCondition as TC, SolverStatus
     if tc in (TC.infeasible, TC.invalidProblem, TC.error, TC.solverFailure):
         return False
 
-    # Acepta óptimo/feasible o límite de tiempo/recursos/interrupción con incumbente
-    time_limited = tc in tuple(
-        x for x in (
-            getattr(TC, "maxTimeLimit", None),
-            getattr(TC, "resourceInterrupt", None),
-            getattr(TC, "userInterrupt", None),
-        ) if x is not None
-    )
-
+    # Óptimo / factible explícito
     if tc in (TC.optimal, TC.feasible):
         return True
 
-    if time_limited and has_sol:
+    # Limites benignos → válidos si hay algo cargado en el modelo
+    user_limited = tc in tuple(x for x in (
+        getattr(TC, "userLimit", None),        # p.ej. SolutionLimit
+        getattr(TC, "maxTimeLimit", None),
+        getattr(TC, "resourceInterrupt", None),
+        getattr(TC, "userInterrupt", None),
+        getattr(TC, "other", None),
+    ) if x is not None)
+
+    if user_limited and has_sol:
         return True
 
-    # Fallback razonable: si el solver quedó OK/Warning y hay solución adjunta
-    return (st in (SolverStatus.ok, SolverStatus.warning)) and has_sol
+    # Algunos backends marcan aborted pero con solución (tu WARNING)
+    if (st in (SolverStatus.aborted, SolverStatus.ok, SolverStatus.warning)) and has_sol:
+        return True
+
+    return False
+
+
 
 
 def ejecutar_instancias_coloracion(
@@ -82,6 +104,8 @@ def ejecutar_instancias_coloracion(
     print("Iniciando procesamiento de optimización para múltiples semanas...")
     
     semanas_infactibles = []
+    
+    
     for semana_actual in semanas_a_procesar:
         print(f"\n--- Procesando Semana: {semana_actual} ---")
     
@@ -99,6 +123,8 @@ def ejecutar_instancias_coloracion(
         archivo_instancia = os.path.join(directorio_datos_semanal, f"Instancia_{semana_actual}_{PARTICIPACION_C}_K.xlsx")
         resultado_file_semana = os.path.join(resultados_magdalena_base_path, semana_actual, f"resultado_{semana_actual}_{PARTICIPACION_C}_K.xlsx")
         resultado_distancias_file_semana = os.path.join(resultados_magdalena_base_path, semana_actual, f"Distancias_Modelo_{semana_actual}_{PARTICIPACION_C}.xlsx")
+        
+        metrics_csv = os.path.join(resultados_dir_script, "metrics", "metrics_magdalena.csv")
     
         try:
             # Verificar si el archivo de instancia existe ANTES de intentar leerlo
@@ -158,17 +184,6 @@ def ejecutar_instancias_coloracion(
                 ks_map = df['KS_s'].set_index('S')['KS'].to_dict()
                 alpha_dict = {s: float(beta_alpha) / float(ks_map[s]) for s in df['S']['S']}
                 model.alpha = Param(model.S, initialize=alpha_dict, within=Reals)
-            
-            #   - gamma[s] si se usa cota superior (flujo)
-            #     Nota: forzamos gamma >= 1/KS[s] para que con a lo más KS[s] bloques
-            #     se pueda repartir el 100% del flujo del turno (evita infactibilidad).
-            if usar_cota_superior:
-                ks_map = df['KS_s'].set_index('S')['KS'].to_dict()
-                gamma_dict = {
-                    s: max(float(gamma_val), 1.0 / float(ks_map[s]))
-                    for s in df['S']['S']
-                }
-                model.gamma = Param(model.S, initialize=gamma_dict, within=Reals)
 
             
             model.LE = Param(model.B, initialize=df['LE_b'].set_index('B')['LE'].to_dict())
@@ -176,18 +191,17 @@ def ejecutar_instancias_coloracion(
             model.OS = Param(initialize=1, mutable=True)
             
             C_mediana = float(pd.Series(df['C_b']['C']).astype(float).median())
-            
             es_pila = C_mediana <= 6.0
+            
             if es_pila:
                 # En modo 'pila' no imponemos mínimo por turno al abrir/unidad
-                OI_dict = {row.B: 0.0 for _, row in df['C_b'].iterrows()}
+                OI_dict = {row.B: 0.2 for _, row in df['C_b'].iterrows()}
             else:
                 # En modo 'bahía' mantén tu regla original OI=1/C[b]
                 OI_dict = {row.B: 1.0/float(row.C) for _, row in df['C_b'].iterrows()}
                 
             model.OI = Param(model.B, within=NonNegativeReals, initialize=OI_dict)
             
-            #model.OI = Param(initialize=0.0204081632653061)
             model.r = Param(initialize=348)
             model.R = Param(model.S, initialize=df['R_s'].set_index('S')['R'].to_dict())
     
@@ -220,7 +234,7 @@ def ejecutar_instancias_coloracion(
                     rhs = m.alpha[s] * m.TC[s, t]
                     if rhs < 1:
                         return Constraint.Skip
-                    return m.fr[s, b, t] + m.fd[s, b, t] >= math.ceil(rhs) * m.u[s, b]
+                    return m.fr[s, b, t] + m.fd[s, b, t] >= math.ceil(rhs) * m.y[s, b, t]
                 model.constraint_lower_flow = Constraint(model.S, model.B, model.T, rule=lower_flow_rule)
             
                 #   Cota de dispersión sobre el flujo ENTRANTE del turno (A):
@@ -371,12 +385,13 @@ def ejecutar_instancias_coloracion(
             for t in model.T:
                 model.constraint_20.add(expr=model.p[t] - model.q[t] <= model.r)
     
+            # * model.TEU[s]
             # Restricción (21)
             model.constraint_21 = ConstraintList()
             for t in model.T:
                 for b in model.B:
                     model.constraint_21.add(
-                        expr = sum(model.v[s, b, t] * model.TEU[s] * model.R[s] for s in model.S) <= model.VSR[b]
+                        expr = sum(model.v[s, b, t] * model.R[s] for s in model.S) <= model.VSR[b]
                     )
     
             # Función objetivo
@@ -394,19 +409,24 @@ def ejecutar_instancias_coloracion(
             solver.options.update({
                 'LogToConsole': 0,
                 'LogFile': os.path.join(directorio_datos_semanal, f'gurobi_log_{semana_actual}.log'),
-                'MIPGap': 1e-6,
+                'MIPGap': 1e-3,
                 'FeasibilityTol': 1e-5,
                 'OptimalityTol': 1e-8,
                 'IntFeasTol': 1e-5,
-                'TimeLimit': 350,
+                'TimeLimit': 1000,
                 'MIPFocus': 1,      # prioriza factibilidad
                 'Heuristics': 0.5,  # más heurística
                 'PumpPasses': 20,   # feasibility pump
+                'SolutionLimit': 20, # detener al encontrar la primera solución factible
             })
     
-            res = solver.solve(model, tee=True, load_solutions=False)
+            t0 = time.perf_counter()
+            res = solver.solve(model, tee=True, load_solutions=True)
+            t1 = time.perf_counter()
             
-            if res.solver.termination_condition == TerminationCondition.infeasible:
+            tc = res.solver.termination_condition
+            
+            if tc == TerminationCondition.infeasible:
                 logger.error("🚨 Infactible en %s: escribiendo LP + IIS…", semana_actual)
                 results_dir_semana = os.path.join(resultados_magdalena_base_path, semana_actual)
                 lp_path  = os.path.join(results_dir_semana, f"modelo_inf_{semana_actual}.lp")
@@ -416,14 +436,14 @@ def ejecutar_instancias_coloracion(
                 semanas_infactibles.append(semana_actual)
                 continue
             
-            if not _has_incumbent(res):
-                logger.error("⛔ %s terminó sin incumbente. Guardo LP y sigo.", semana_actual)
+            if not _has_incumbent(res, model):
+                # Aquí ya NO escribimos LP si hay solución adjunta: sólo guarda LP cuando de verdad no hay incumbente.
+                logger.error("⛔ %s terminó sin incumbente real. Guardo LP y sigo.", semana_actual)
                 results_dir_semana = os.path.join(resultados_magdalena_base_path, semana_actual)
                 lp_path = os.path.join(results_dir_semana, f"modelo_{semana_actual}_nolb.lp")
                 model.write(lp_path, format="lp", io_options={'symbolic_solver_labels': True})
                 continue
-    
-            model.solutions.load_from(res)
+            
             logger.info("✅ Semana %s con solución (tc=%s).", semana_actual, res.solver.termination_condition)
     
             # Calcular distancia para exportación (expo)
@@ -636,6 +656,23 @@ def ejecutar_instancias_coloracion(
             print(f"Resumen de distancias para {semana_actual} guardado en {resultado_distancias_file_semana}")
         except Exception as e:
             print(f"Error al guardar el archivo de resumen de distancias para {semana_actual}: {str(e)}")
+            
+        meta = {
+            "modelo": "magdalena",
+            "semana": semana_actual,
+            "participacion": str(PARTICIPACION_C),
+            "fase": "final",
+            "usar_cota_inferior": bool(usar_cota_inferior),
+            "usar_cota_superior": bool(usar_cota_superior),
+            "beta_alpha": float(beta_alpha),
+            "gamma_val": float(gamma_val),
+            "resultado_xlsx": resultado_file_semana,
+            "resultado_distancias": resultado_distancias_file_semana,
+        }
+        obj_val = objective_value_safe(model, obj_name="objective")
+        row = telemetry_pack(model, meta=meta, solve_elapsed=t1-t0, res=res, objective=obj_val)
+        append_metrics_row(metrics_csv, row)
+        
     
     print("\nProceso completado para todas las semanas.")
     

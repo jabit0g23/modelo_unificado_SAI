@@ -15,7 +15,7 @@ from modelo_gruas_minmax import ejecutar_instancias_gruas_minmax  # opcional
 
 # (A) Semanas
 ANIO = 2022
-SEMANAS =  ["2022-01-03", "2022-01-10", "2022-01-17", "2022-01-24", "2022-01-31", "2022-02-07", "2022-02-14", "2022-02-21", "2022-02-28", "2022-03-07", "2022-03-14", "2022-03-21", "2022-04-04", "2022-04-11", "2022-04-18", "2022-04-25", "2022-05-02", "2022-05-09", "2022-05-16", "2022-05-23", "2022-05-30", "2022-06-06", "2022-06-13", "2022-06-20", "2022-06-27"]  # lista semanas del año
+SEMANAS =  ["2022-01-03"]
 
 USAR_RANGO = False
 ISO_WEEK_INI = 41
@@ -25,30 +25,31 @@ ISO_WEEK_FIN = 52
 PARTICIPACION = 68
 CRITERIO = "criterio_ii" # "criterio_ii" / "criterio_iii"
 OBJETIVO_GRUAS = "maxmin"  # "maxmin" o "minmax"
+
 TURNOS = list(range(1, 22))  # 1..21
-CAP_MODE = "pila"   # cambiar entre "pila" y "bahia"
+CAP_MODE = "bahia"   # cambiar entre "pila" y "bahia"
 
 # (C) Switches de pasos
 EJECUTAR = {
-    "instancias_coloracion": False,
-    "modelo_coloracion":     False,
+    "instancias_coloracion": True,
+    "modelo_coloracion":     True,
     "guardar_csv":           False,
-    "instancias_gruas":      True,
-    "modelo_gruas":          True,
+    "instancias_gruas":      False,
+    "modelo_gruas":          False,
 }
 
 # (D) ►► Switches/valores de RESTRICCIONES (Magdalena) ◄◄
 RESTRICCIONES_MAGDALENA = {
-    "usar_cota_inferior": True,
+    "usar_cota_inferior": False,
     "beta_alpha":         0.8,
     "usar_cota_superior": False,
-    "gamma":              0.2,
+    "gamma":              1.2,
 }
 
 # (E) Rutas
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 ESTATICOS  = os.path.join(BASE_DIR, "archivos_estaticos")
-RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_k08")
+RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}")
 BASE_INST  = os.path.join(RESULTADOS, "instancias_camila")
 BASE_RES   = os.path.join(RESULTADOS, "resultados_camila")
 
