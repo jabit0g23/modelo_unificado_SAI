@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 
 from instancias_coloracion import generar_instancias_coloracion
-from modelo_coloracion import ejecutar_instancias_coloracion
+from modelo_coloracion import ejecutar_instancias
 from instancias_gruas import generar_instancias_gruas
 from modelo_gruas_maxmin import ejecutar_instancias_gruas_maxmin
 from modelo_gruas_minmax import ejecutar_instancias_gruas_minmax  # opcional
@@ -31,20 +31,13 @@ CAP_MODE = "bahia"   # cambiar entre "pila" y "bahia"
 
 # (C) Switches de pasos
 EJECUTAR = {
-    "instancias_coloracion": True,
+    "instancias_coloracion": False,
     "modelo_coloracion":     True,
     "guardar_csv":           False,
     "instancias_gruas":      False,
     "modelo_gruas":          False,
 }
 
-# (D) ►► Switches/valores de RESTRICCIONES (Magdalena) ◄◄
-RESTRICCIONES_MAGDALENA = {
-    "usar_cota_inferior": False,
-    "beta_alpha":         0.8,
-    "usar_cota_superior": False,
-    "gamma":              1.2,
-}
 
 # (E) Rutas
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -108,14 +101,10 @@ def main():
     # 2) Ejecutar modelo de coloración (Magdalena)
     if EJECUTAR["modelo_coloracion"]:
         print("\n[2/5] Ejecutando modelo de coloración (Magdalena)…")
-        semanas_filtradas, semanas_infactibles = ejecutar_instancias_coloracion(
+        semanas_filtradas, semanas_infactibles = ejecutar_instancias(
             semanas,
             PARTICIPACION,
             RESULTADOS,
-            usar_cota_inferior=RESTRICCIONES_MAGDALENA["usar_cota_inferior"],
-            beta_alpha=RESTRICCIONES_MAGDALENA["beta_alpha"],
-            usar_cota_superior=RESTRICCIONES_MAGDALENA["usar_cota_superior"],
-            gamma_val=RESTRICCIONES_MAGDALENA["gamma"],
         )
         print(f"Procesamiento OK = {len(semanas_filtradas)}")
         print(f"Semanas infactibles = {len(semanas_infactibles)}")
