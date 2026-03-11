@@ -206,12 +206,12 @@ def build_ex_rtg(B_C, BLOQUES, allowed_pairs):
 def generar_instancias_gruas(semanas, participacion, resultados_dir):
     
     # Cantidad de grúas por tipo
-    N_RTG = 14
-    N_RS  = 11
+    N_RTG = 5 #14
+    N_RS  = 9 #11
 
     # Productividades por tipo (mov/hr)
-    MU_RTG = 30
-    MU_RS  = 20
+    MU_RTG = 15 #30
+    MU_RS  = 10 #20
 
     resultados_dir = Path(resultados_dir)
     inst_magdalena_root = resultados_dir / "instancias_magdalena"
@@ -364,7 +364,7 @@ def generar_instancias_gruas(semanas, participacion, resultados_dir):
         df_static_T    = pd.DataFrame({"T": list(range(1, 9))})
 
         # Parámetros escalares “históricos” (se mantienen por compatibilidad)
-        df_static_mu   = pd.DataFrame({"mu": [300]})
+        df_static_mu   = pd.DataFrame({"mu": [30]})
         df_static_W    = pd.DataFrame({"W": [3]})
         df_static_K    = pd.DataFrame({"K": [2]})  # ahora el modelo usará K_g; esto queda como referencia
         

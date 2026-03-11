@@ -6,49 +6,42 @@ from instancias_coloracion import generar_instancias_coloracion
 from modelo_coloracion import ejecutar_instancias_coloracion
 from instancias_gruas import generar_instancias_gruas
 from modelo_gruas_maxmin import ejecutar_instancias_gruas_maxmin
-from modelo_gruas_minmax import ejecutar_instancias_gruas_minmax  # opcional
 
 # ───────── CONFIGURACIÓN EDITABLE ─────────
 
-#["2022-01-03", "2022-01-10", "2022-01-17", "2022-01-24", "2022-01-31", "2022-02-07", "2022-02-14", "2022-02-21", "2022-02-28", "2022-03-07", "2022-03-14", "2022-03-21", "2022-04-04", "2022-04-11", "2022-04-18", "2022-04-25", "2022-05-02", "2022-05-09", "2022-05-16", "2022-05-23", "2022-05-30", "2022-06-06", "2022-06-13", "2022-06-20", "2022-06-27", "2022-07-04", "2022-07-11", "2022-07-18", "2022-07-25", "2022-08-01", "2022-08-08", "2022-08-15", "2022-08-22", "2022-08-29", "2022-09-05", "2022-09-12", "2022-09-19", "2022-09-26", "2022-10-03", "2022-10-10", "2022-10-17", "2022-10-24", "2022-10-31", "2022-11-07", "2022-11-14", "2022-11-21", "2022-11-28", "2022-12-05", "2022-12-12", "2022-12-19", "2022-12-26"]  
-
+#["2022-01-03", "2022-01-10", "2022-01-17", "2022-01-24", "2022-01-31", "2022-02-07", "2022-02-14", "2022-02-21", "2022-02-28", "2022-03-07", "2022-03-14", "2022-03-21", "2022-04-04", "2022-04-11", "2022-04-18", "2022-04-25", "2022-05-02", "2022-05-09", "2022-05-16", "2022-05-23", "2022-05-30", "2022-06-06", "2022-06-13", "2022-06-20", "2022-06-27", "2022-07-04", "2022-07-11", "2022-07-18", "2022-07-25", "2022-08-01", "2022-08-08", "2022-08-15", "2022-08-22", "2022-08-29", "2022-09-05", "2022-09-12", "2022-09-19", "2022-09-26", "2022-10-03", "2022-10-10", "2022-10-17", "2022-10-24", "2022-10-31", "2022-11-07", "2022-11-14", "2022-11-21", "2022-11-28", "2022-12-05", "2022-12-12", "2022-12-19", "2022-12-26"]
 
 # (A) Semanas
 ANIO = 2022
-SEMANAS =  ["2022-01-03", "2022-01-10", "2022-01-17", "2022-01-24", "2022-01-31", "2022-02-07", "2022-02-14", "2022-02-21", "2022-02-28", "2022-03-07", "2022-03-14", "2022-03-21", "2022-04-04", "2022-04-11", "2022-04-18", "2022-04-25", "2022-05-02", "2022-05-09", "2022-05-16", "2022-05-23", "2022-05-30", "2022-06-06", "2022-06-13", "2022-06-20", "2022-06-27"]  # lista semanas del año
+
+#"2022-02-07", "2022-02-21","2022-02-28", "2022-03-14"
+SEMANAS =  ["2022-04-04", "2022-04-18","2022-05-02", "2022-05-09", "2022-05-16", "2022-05-23", "2022-05-30", "2022-06-06", "2022-06-13", "2022-06-20",  "2022-07-04", "2022-07-11", "2022-07-18", "2022-07-25", "2022-08-01", "2022-08-08", "2022-08-15", "2022-08-22", "2022-08-29", "2022-09-05", "2022-09-12", "2022-09-19", "2022-09-26", "2022-10-03", "2022-10-10", "2022-10-17", "2022-10-24", "2022-10-31", "2022-11-07", "2022-11-14", "2022-11-21", "2022-11-28", "2022-12-05", "2022-12-19", "2022-12-26"]
 
 USAR_RANGO = False
 ISO_WEEK_INI = 41
 ISO_WEEK_FIN = 52
 
 # (B) Parámetros generales
-PARTICIPACION = 68
+PARTICIPACION = 0
 CRITERIO = "criterio_ii" # "criterio_ii" / "criterio_iii"
 OBJETIVO_GRUAS = "maxmin"  # "maxmin" o "minmax"
-TURNOS = list(range(1, 22))  # 1..21
-CAP_MODE = "pila"   # cambiar entre "pila" y "bahia"
 
-# (C) Switches de pasos
+TURNOS = list(range(1, 22))  # 1..21
+CAP_MODE = "bahia"   # cambiar entre "pila" y "bahia"
+
+# (C) Switches de pasos 
 EJECUTAR = {
     "instancias_coloracion": False,
-    "modelo_coloracion":     False,
+    "modelo_coloracion":     True,
     "guardar_csv":           False,
-    "instancias_gruas":      True,
-    "modelo_gruas":          True,
+    "instancias_gruas":      False,
+    "modelo_gruas":          False,
 }
 
-# (D) ►► Switches/valores de RESTRICCIONES (Magdalena) ◄◄
-RESTRICCIONES_MAGDALENA = {
-    "usar_cota_inferior": True,
-    "beta_alpha":         0.8,
-    "usar_cota_superior": False,
-    "gamma":              0.2,
-}
-
-# (E) Rutas
+# (D) Rutas
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 ESTATICOS  = os.path.join(BASE_DIR, "archivos_estaticos")
-RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_k08")
+RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_p{PARTICIPACION}_no_filtros")
 BASE_INST  = os.path.join(RESULTADOS, "instancias_camila")
 BASE_RES   = os.path.join(RESULTADOS, "resultados_camila")
 
@@ -110,11 +103,7 @@ def main():
         semanas_filtradas, semanas_infactibles = ejecutar_instancias_coloracion(
             semanas,
             PARTICIPACION,
-            RESULTADOS,
-            usar_cota_inferior=RESTRICCIONES_MAGDALENA["usar_cota_inferior"],
-            beta_alpha=RESTRICCIONES_MAGDALENA["beta_alpha"],
-            usar_cota_superior=RESTRICCIONES_MAGDALENA["usar_cota_superior"],
-            gamma_val=RESTRICCIONES_MAGDALENA["gamma"],
+            RESULTADOS
         )
         print(f"Procesamiento OK = {len(semanas_filtradas)}")
         print(f"Semanas infactibles = {len(semanas_infactibles)}")
@@ -149,10 +138,6 @@ def main():
         objetivo = OBJETIVO_GRUAS.strip().lower()
         if objetivo == "maxmin":
             ejecutar_instancias_gruas_maxmin(
-                semanas_filtradas, turnos_str, PARTICIPACION, BASE_INST, BASE_RES
-            )
-        elif objetivo == "minmax":
-            ejecutar_instancias_gruas_minmax(
                 semanas_filtradas, turnos_str, PARTICIPACION, BASE_INST, BASE_RES
             )
         else:

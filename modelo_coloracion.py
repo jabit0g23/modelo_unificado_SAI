@@ -4,6 +4,11 @@ import logging, sys
 from pyomo.opt import TerminationCondition
 import pandas as pd
 import os
+from util import telemetry_pack, append_metrics_row, objective_value_safe
+import time
+import re
+import subprocess
+from typing import Any, Dict, Optional
 
 from pyomo.opt import SolverStatus, TerminationCondition as TC
 
@@ -19,45 +24,209 @@ import logging, sys, os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("magdalena")
 
-def _has_incumbent(res):
+# =========================================================
+# HELPERS DE TELEMETRÍA (paper-ready)
+# =========================================================
+def _safe_float(x) -> Optional[float]:
+    try:
+        if x is None:
+            return None
+        return float(x)
+    except Exception:
+        return None
+
+def _gurobi_version_safe() -> Optional[str]:
+    """
+    Opción 1: gurobipy
+    Opción 2: gurobi_cl --version
+    """
+    try:
+        import gurobipy as gp
+        v = gp.gurobi.version()  # (major, minor, technical)
+        return ".".join(map(str, v))
+    except Exception:
+        pass
+
+    try:
+        out = subprocess.check_output(["gurobi_cl", "--version"], stderr=subprocess.STDOUT, text=True)
+        m = re.search(r"version\s+(\d+\.\d+\.\d+)", out, flags=re.IGNORECASE)
+        if m:
+            return m.group(1)
+        line0 = out.strip().splitlines()[0].strip()
+        return line0[:100]
+    except Exception:
+        return None
+
+def _extract_gurobi_stats_from_results(res) -> Dict[str, Any]:
+    """
+    Intenta leer mip_gap y node_count desde Results (Pyomo).
+    Si no están, devuelve None y lo sacamos del log.
+    """
+    mip_gap = None
+    node_count = None
+
+    try:
+        stats = getattr(res.solver, "statistics", None)
+        if stats is not None:
+            bb = getattr(stats, "branch_and_bound", None)
+            if bb is not None:
+                node_count = getattr(bb, "number_of_created_nodes", None) or getattr(bb, "number_of_nodes", None)
+
+            mip_gap = getattr(stats, "mip_gap", None) or getattr(stats, "gap", None)
+    except Exception:
+        pass
+
+    try:
+        mip_gap = mip_gap or getattr(res.solver, "mip_gap", None) or getattr(res.solver, "gap", None)
+    except Exception:
+        pass
+
+    return {
+        "mip_gap": _safe_float(mip_gap),
+        "node_count": None if node_count is None else int(node_count),
+    }
+
+def _parse_gurobi_log_for_threads_gap_nodes(log_path: str) -> Dict[str, Any]:
+    """
+    Parsea log de Gurobi para:
+    - threads: "using up to X threads"
+    - node_count: "Explored N nodes"
+    - mip_gap: "gap ..."
+    """
+    out = {"threads": None, "mip_gap": None, "node_count": None}
+
+    if not log_path or not os.path.exists(log_path):
+        return out
+
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+    except Exception:
+        return out
+
+    # threads
+    for ln in lines[:300]:
+        m = re.search(r"using up to\s+(\d+)\s+threads", ln, flags=re.IGNORECASE)
+        if m:
+            out["threads"] = int(m.group(1))
+            break
+
+    # node_count
+    for ln in reversed(lines[-500:]):
+        m = re.search(r"Explored\s+(\d+)\s+nodes", ln, flags=re.IGNORECASE)
+        if m:
+            out["node_count"] = int(m.group(1))
+            break
+
+    # mip_gap
+    gap_candidates = []
+    for ln in reversed(lines[-800:]):
+        m = re.search(r"\bgap\s+([0-9]+(?:\.[0-9]+)?)\s*%", ln, flags=re.IGNORECASE)
+        if m:
+            gap_candidates.append(float(m.group(1)) / 100.0)
+            continue
+
+        m2 = re.search(r"\bgap\s+([0-9]+(?:\.[0-9]+)?)\b", ln, flags=re.IGNORECASE)
+        if m2:
+            val = float(m2.group(1))
+            gap_candidates.append(val if val <= 1.0 else val / 100.0)
+
+        m3 = re.search(r"best bound.*gap\s+([0-9]+(?:\.[0-9]+)?)\s*%", ln, flags=re.IGNORECASE)
+        if m3:
+            gap_candidates.append(float(m3.group(1)) / 100.0)
+
+    if gap_candidates:
+        out["mip_gap"] = gap_candidates[0]
+
+    return out
+
+
+
+def _has_incumbent(res, model=None):
     tc = res.solver.termination_condition
     st = res.solver.status
 
-    # Si el solver adjuntó soluciones, úsalo como señal definitiva
+    # 1) Pyomo-style (cuando sí viene algo en res.solution)
     has_sol = hasattr(res, "solution") and res.solution and len(res.solution) > 0
 
-    # Condiciones que NO tienen solución
+    # 2) Model-aware: si load_solutions=True, los valores están en las Vars
+    if not has_sol and (model is not None):
+        try:
+            # toma una variable y revisa si tiene algún valor distinto de None
+            for v in model.component_data_objects(Var, active=True, descend_into=True):
+                if v.value is not None:
+                    has_sol = True
+                    break
+        except Exception:
+            pass
+
+    # Casos sin solución
+    from pyomo.opt import TerminationCondition as TC, SolverStatus
     if tc in (TC.infeasible, TC.invalidProblem, TC.error, TC.solverFailure):
         return False
 
-    # Acepta óptimo/feasible o límite de tiempo/recursos/interrupción con incumbente
-    time_limited = tc in tuple(
-        x for x in (
-            getattr(TC, "maxTimeLimit", None),
-            getattr(TC, "resourceInterrupt", None),
-            getattr(TC, "userInterrupt", None),
-        ) if x is not None
-    )
-
+    # Óptimo / factible explícito
     if tc in (TC.optimal, TC.feasible):
         return True
 
-    if time_limited and has_sol:
+    # Limites benignos → válidos si hay algo cargado en el modelo
+    user_limited = tc in tuple(x for x in (
+        getattr(TC, "userLimit", None),        # p.ej. SolutionLimit
+        getattr(TC, "maxTimeLimit", None),
+        getattr(TC, "resourceInterrupt", None),
+        getattr(TC, "userInterrupt", None),
+        getattr(TC, "other", None),
+    ) if x is not None)
+
+    if user_limited and has_sol:
         return True
 
-    # Fallback razonable: si el solver quedó OK/Warning y hay solución adjunta
-    return (st in (SolverStatus.ok, SolverStatus.warning)) and has_sol
+    # Algunos backends marcan aborted pero con solución (tu WARNING)
+    if (st in (SolverStatus.aborted, SolverStatus.ok, SolverStatus.warning)) and has_sol:
+        return True
+
+    return False
+
+from pyomo.environ import SolverFactory
+
+def write_iis_gurobi_with_timelimit(pyomo_model, iis_file_name, timelimit_s=120, *, iis_method=None, log_file=None):
+    """
+    Calcula IIS con Gurobi (vía gurobi_persistent) con límite de tiempo.
+    Devuelve (path_escrito, iis_minimal_bool).
+    """
+    solver = SolverFactory("gurobi_persistent")
+    solver.set_instance(pyomo_model, symbolic_solver_labels=True)
+
+    grb = solver._solver_model  # modelo gurobipy interno
+
+    # Time limit para computeIIS (Gurobi lo respeta)
+    grb.Params.TimeLimit = float(timelimit_s)
+
+    # Opcional: método de IIS (depende de versión; si no sabes, no lo toques)
+    if iis_method is not None:
+        grb.Params.IISMethod = int(iis_method)
+
+    # Opcional: log del IIS
+    if log_file is not None:
+        grb.Params.LogFile = str(log_file)
+        grb.Params.LogToConsole = 0
+
+    grb.computeIIS()
+
+    # Gurobi decide el formato por extensión; lo típico es .ilp
+    if not iis_file_name.lower().endswith(".ilp"):
+        iis_file_name = iis_file_name + ".ilp"
+    grb.write(iis_file_name)
+
+    # IISMinimal = 1 si es irreducible/minimal; si se cortó por tiempo, típicamente queda 0
+    iis_minimal = bool(getattr(grb, "IISMinimal", 0))
+    return iis_file_name, iis_minimal
 
 
 def ejecutar_instancias_coloracion(
     semanas,
     participacion,
-    resultados_dir,
-    *,
-    usar_cota_inferior=False,  # activa/desactiva cota inferior (equidad por turno)
-    beta_alpha=0.8,            # beta para alpha[s] = beta / KS[s]
-    usar_cota_superior=False,  # activa/desactiva cota superior dinámica (dispersión)
-    gamma_val=0.2,             # gamma en (0,1]
+    resultados_dir
 ):
 
     
@@ -82,6 +251,8 @@ def ejecutar_instancias_coloracion(
     print("Iniciando procesamiento de optimización para múltiples semanas...")
     
     semanas_infactibles = []
+    
+    
     for semana_actual in semanas_a_procesar:
         print(f"\n--- Procesando Semana: {semana_actual} ---")
     
@@ -99,6 +270,8 @@ def ejecutar_instancias_coloracion(
         archivo_instancia = os.path.join(directorio_datos_semanal, f"Instancia_{semana_actual}_{PARTICIPACION_C}_K.xlsx")
         resultado_file_semana = os.path.join(resultados_magdalena_base_path, semana_actual, f"resultado_{semana_actual}_{PARTICIPACION_C}_K.xlsx")
         resultado_distancias_file_semana = os.path.join(resultados_magdalena_base_path, semana_actual, f"Distancias_Modelo_{semana_actual}_{PARTICIPACION_C}.xlsx")
+        
+        metrics_csv = os.path.join(resultados_dir_script, "metrics", "metrics_magdalena.csv")
     
         try:
             # Verificar si el archivo de instancia existe ANTES de intentar leerlo
@@ -106,6 +279,7 @@ def ejecutar_instancias_coloracion(
                 print(f"ADVERTENCIA: Archivo de instancia no encontrado para la semana {semana_actual}: {archivo_instancia}. Saltando esta semana.")
                 continue # Pasar a la siguiente semana
     
+            t_build0 = time.perf_counter()
             model = ConcreteModel()
     
             # Leer DataFrame
@@ -144,31 +318,63 @@ def ejecutar_instancias_coloracion(
             lc_dict = {(row['S'], row['B']): row['LC'] for _, row in df['LC_sb'].iterrows()}
             model.LC = Param(model.S, model.B, initialize=lc_dict, within=NonNegativeIntegers)
             
-            # ► Preparación de parámetros para restricciones opcionales
-            #   - TC[s,t] siempre que alguna cota esté activa
-            if usar_cota_inferior or usar_cota_superior:
-                TC_dict = {
-                    (row['S'], row['T']): int(row['DR']) + int(row['DD'])
-                    for _, row in df['D_params'].iterrows()
-                }
-                model.TC = Param(model.S, model.T, initialize=TC_dict, within=NonNegativeIntegers)
+
+            # =========================
+            # DISPERSIÓN (anti-concentración) - parámetros auxiliares
+            # =========================
+            THETA_DISPERSION = 1.4
+            dispersion_mode = "prefijo"  # "global" o "prefijo"
             
-            #   - alpha[s] = beta / KS[s] si se usa cota inferior
-            if usar_cota_inferior:
-                ks_map = df['KS_s'].set_index('S')['KS'].to_dict()
-                alpha_dict = {s: float(beta_alpha) / float(ks_map[s]) for s in df['S']['S']}
-                model.alpha = Param(model.S, initialize=alpha_dict, within=Reals)
+            S_list = [s for s in df["S"].iloc[:, 0].tolist()]
+            T_list = [int(t) for t in df["T"].iloc[:, 0].tolist()]  # asegura int para comparar tau<=t
+            T_list = sorted(T_list)
             
-            #   - gamma[s] si se usa cota superior (flujo)
-            #     Nota: forzamos gamma >= 1/KS[s] para que con a lo más KS[s] bloques
-            #     se pueda repartir el 100% del flujo del turno (evita infactibilidad).
-            if usar_cota_superior:
-                ks_map = df['KS_s'].set_index('S')['KS'].to_dict()
-                gamma_dict = {
-                    s: max(float(gamma_val), 1.0 / float(ks_map[s]))
-                    for s in df['S']['S']
+            KI_map = df['KI_s'].set_index('S')['KI'].to_dict()
+            
+            # ---------
+            # Global: TOTIN[s] y CAPBLOCK[s]
+            # ---------
+            if dispersion_mode == "global":
+                TotIn_dict = {
+                    s: sum(int(DR_dict[(s, t)]) + int(DD_dict[(s, t)]) for t in T_list)
+                    for s in S_list
                 }
-                model.gamma = Param(model.S, initialize=gamma_dict, within=Reals)
+                model.TOTIN = Param(model.S, initialize=TotIn_dict, within=NonNegativeIntegers)
+            
+                CapBlock_dict = {}
+                for s in S_list:
+                    tot = int(TotIn_dict[s])
+                    ki = max(1, int(KI_map[s]))
+                    cap = int(math.ceil(THETA_DISPERSION * tot / ki)) if tot > 0 else 0
+                    cap = min(cap, tot)
+                    CapBlock_dict[s] = cap
+            
+                model.CAPBLOCK = Param(model.S, initialize=CapBlock_dict, within=NonNegativeIntegers)
+            
+            # ---------
+            # Prefijo: TOTINP[s,t] y CAPBLOCKP[s,t]
+            # ---------
+            if dispersion_mode == "prefijo":
+                TotInP_dict = {}
+                CapBlockP_dict = {}
+            
+                for s in S_list:
+                    ki = max(1, int(KI_map[s]))
+                    running = 0
+                    for t in T_list:
+                        running += int(DR_dict[(s, t)]) + int(DD_dict[(s, t)])
+                        TotInP_dict[(s, t)] = running
+            
+                        if running > 0:
+                            cap = int(math.ceil(THETA_DISPERSION * running / ki))
+                            cap = min(cap, running)
+                        else:
+                            cap = 0
+            
+                        CapBlockP_dict[(s, t)] = cap
+            
+                model.TOTINP = Param(model.S, model.T, initialize=TotInP_dict, within=NonNegativeIntegers)
+                model.CAPBLOCKP = Param(model.S, model.T, initialize=CapBlockP_dict, within=NonNegativeIntegers)
 
             
             model.LE = Param(model.B, initialize=df['LE_b'].set_index('B')['LE'].to_dict())
@@ -176,18 +382,17 @@ def ejecutar_instancias_coloracion(
             model.OS = Param(initialize=1, mutable=True)
             
             C_mediana = float(pd.Series(df['C_b']['C']).astype(float).median())
-            
             es_pila = C_mediana <= 6.0
+            
             if es_pila:
                 # En modo 'pila' no imponemos mínimo por turno al abrir/unidad
-                OI_dict = {row.B: 0.0 for _, row in df['C_b'].iterrows()}
+                OI_dict = {row.B: 0.2 for _, row in df['C_b'].iterrows()}
             else:
                 # En modo 'bahía' mantén tu regla original OI=1/C[b]
                 OI_dict = {row.B: 1.0/float(row.C) for _, row in df['C_b'].iterrows()}
                 
             model.OI = Param(model.B, within=NonNegativeReals, initialize=OI_dict)
             
-            #model.OI = Param(initialize=0.0204081632653061)
             model.r = Param(initialize=348)
             model.R = Param(model.S, initialize=df['R_s'].set_index('S')['R'].to_dict())
     
@@ -220,7 +425,7 @@ def ejecutar_instancias_coloracion(
                     rhs = m.alpha[s] * m.TC[s, t]
                     if rhs < 1:
                         return Constraint.Skip
-                    return m.fr[s, b, t] + m.fd[s, b, t] >= math.ceil(rhs) * m.u[s, b]
+                    return m.fr[s, b, t] + m.fd[s, b, t] >= math.ceil(rhs) * m.y[s, b, t]
                 model.constraint_lower_flow = Constraint(model.S, model.B, model.T, rule=lower_flow_rule)
             
                 #   Cota de dispersión sobre el flujo ENTRANTE del turno (A):
@@ -235,6 +440,32 @@ def ejecutar_instancias_coloracion(
                             <= m.gamma[s] * sum(m.fr[s, bp, t] + m.fd[s, bp, t] for bp in m.B)
                         )
                     model.constraint_upper_flow = Constraint(model.S, model.B, model.T, rule=upper_flow_dispersal_rule)
+           
+
+            # =========================
+            # Dispersion constraint
+            # =========================
+            if dispersion_mode == "global":
+                def anti_concentracion_rule(m, s, b):
+                    if m.TOTIN[s] == 0:
+                        return Constraint.Skip
+                    return (
+                        sum(m.fr[s, b, t] + m.fd[s, b, t] for t in m.T)
+                        <= m.CAPBLOCK[s] * m.u[s, b]
+                    )
+                model.constraint_dispersion = Constraint(model.S, model.B, rule=anti_concentracion_rule)
+            
+            elif dispersion_mode == "prefijo":
+                def anti_concentracion_prefijo_rule(m, s, b, t):
+                    if m.TOTINP[s, t] == 0:
+                        return Constraint.Skip
+                    return (
+                        sum(m.fr[s, b, tau] + m.fd[s, b, tau] for tau in m.T if tau <= t)
+                        <= m.CAPBLOCKP[s, t] * m.u[s, b]
+                    )
+                model.constraint_dispersion_prefix = Constraint(model.S, model.B, model.T, rule=anti_concentracion_prefijo_rule)
+                      
+           # =========================
             
             # Restricciones (2)
             model.constraint_2 = ConstraintList()
@@ -371,12 +602,13 @@ def ejecutar_instancias_coloracion(
             for t in model.T:
                 model.constraint_20.add(expr=model.p[t] - model.q[t] <= model.r)
     
+            # * model.TEU[s]
             # Restricción (21)
             model.constraint_21 = ConstraintList()
             for t in model.T:
                 for b in model.B:
                     model.constraint_21.add(
-                        expr = sum(model.v[s, b, t] * model.TEU[s] * model.R[s] for s in model.S) <= model.VSR[b]
+                        expr = sum(model.v[s, b, t] * model.R[s] for s in model.S) <= model.VSR[b]
                     )
     
             # Función objetivo
@@ -389,41 +621,73 @@ def ejecutar_instancias_coloracion(
                 )
     
             model.objective = Objective(rule=objective_rule, sense=minimize)
+            t_build1 = time.perf_counter()
+            build_seconds = t_build1 - t_build0
             
             solver = SolverFactory('gurobi')
+            log_path = os.path.join(directorio_datos_semanal, f'gurobi_log_{semana_actual}.log')
             solver.options.update({
                 'LogToConsole': 0,
-                'LogFile': os.path.join(directorio_datos_semanal, f'gurobi_log_{semana_actual}.log'),
-                'MIPGap': 1e-6,
+                'LogFile': log_path,
+                'MIPGap': 1e-3,
                 'FeasibilityTol': 1e-5,
                 'OptimalityTol': 1e-8,
                 'IntFeasTol': 1e-5,
-                'TimeLimit': 350,
+                'TimeLimit': 2000, # 2 hora
                 'MIPFocus': 1,      # prioriza factibilidad
                 'Heuristics': 0.5,  # más heurística
                 'PumpPasses': 20,   # feasibility pump
+                'SolutionLimit': 20, # detener al encontrar la primera solución factible
             })
     
-            res = solver.solve(model, tee=True, load_solutions=False)
+            t0 = time.perf_counter()
+            res = solver.solve(model, tee=True, load_solutions=True)
+            t1 = time.perf_counter()
+            solve_seconds = t1 - t0
             
-            if res.solver.termination_condition == TerminationCondition.infeasible:
+            # ====== NUEVAS MÉTRICAS paper-ready ======
+            gurobi_version = _gurobi_version_safe()
+            
+            stats_res = _extract_gurobi_stats_from_results(res)
+            stats_log = _parse_gurobi_log_for_threads_gap_nodes(log_path)
+            
+            mip_gap = stats_res["mip_gap"] if stats_res["mip_gap"] is not None else stats_log["mip_gap"]
+            node_count = stats_res["node_count"] if stats_res["node_count"] is not None else stats_log["node_count"]
+            threads = stats_log["threads"]
+            
+            tc = res.solver.termination_condition
+            
+            
+            if tc == TerminationCondition.infeasible:
                 logger.error("🚨 Infactible en %s: escribiendo LP + IIS…", semana_actual)
                 results_dir_semana = os.path.join(resultados_magdalena_base_path, semana_actual)
                 lp_path  = os.path.join(results_dir_semana, f"modelo_inf_{semana_actual}.lp")
-                iis_path = os.path.join(results_dir_semana, f"modelo_inf_{semana_actual}.iis")
-                model.write(lp_path, format="lp", io_options={'symbolic_solver_labels': True})
-                write_iis(model, iis_path, solver="gurobi")
+                model.write(lp_path, format="lp", io_options={'symbolic_solver_labels': True})       
+                iis_path = os.path.join(results_dir_semana, f"modelo_inf_{semana_actual}.ilp")
+                iis_log  = os.path.join(results_dir_semana, f"iis_log_{semana_actual}.log")
+                
+                iis_path_written, is_min = write_iis_gurobi_with_timelimit(
+                    model,
+                    iis_path,
+                    timelimit_s=60,      # << tu límite en segundos
+                    iis_method=None,      # o 0/1/2 si quieres probar
+                    log_file=iis_log
+                )
+                
+                logger.error("IIS escrito en %s (IISMinimal=%s)", iis_path_written, int(is_min))
+                
+                
                 semanas_infactibles.append(semana_actual)
                 continue
             
-            if not _has_incumbent(res):
-                logger.error("⛔ %s terminó sin incumbente. Guardo LP y sigo.", semana_actual)
+            if not _has_incumbent(res, model):
+                # Aquí ya NO escribimos LP si hay solución adjunta: sólo guarda LP cuando de verdad no hay incumbente.
+                logger.error("⛔ %s terminó sin incumbente real. Guardo LP y sigo.", semana_actual)
                 results_dir_semana = os.path.join(resultados_magdalena_base_path, semana_actual)
                 lp_path = os.path.join(results_dir_semana, f"modelo_{semana_actual}_nolb.lp")
                 model.write(lp_path, format="lp", io_options={'symbolic_solver_labels': True})
                 continue
-    
-            model.solutions.load_from(res)
+            
             logger.info("✅ Semana %s con solución (tc=%s).", semana_actual, res.solver.termination_condition)
     
             # Calcular distancia para exportación (expo)
@@ -636,6 +900,41 @@ def ejecutar_instancias_coloracion(
             print(f"Resumen de distancias para {semana_actual} guardado en {resultado_distancias_file_semana}")
         except Exception as e:
             print(f"Error al guardar el archivo de resumen de distancias para {semana_actual}: {str(e)}")
+            
+        meta = {
+            "modelo": "magdalena",
+            "semana": semana_actual,
+            "participacion": str(PARTICIPACION_C),
+            "fase": "final",
+            "usar_cota_inferior": bool(usar_cota_inferior),
+            "usar_cota_superior": bool(usar_cota_superior),
+            "beta_alpha": float(beta_alpha),
+            "gamma_val": float(gamma_val),
+            "resultado_xlsx": resultado_file_semana,
+            "resultado_distancias": resultado_distancias_file_semana,
+        
+            # NUEVAS PAPER-METRICS
+            "build_seconds": build_seconds,
+            "gurobi_version": gurobi_version,
+            "threads": threads,
+            "mip_gap": mip_gap,
+            "node_count": node_count,
+        }
+        
+        obj_val = objective_value_safe(model, obj_name="objective")
+        row = telemetry_pack(model, meta=meta, solve_elapsed=solve_seconds, res=res, objective=obj_val)
+        
+        # Por si telemetry_pack no expande meta a columnas, lo reforzamos:
+        row["build_seconds"] = build_seconds
+        row["gurobi_version"] = gurobi_version
+        row["threads"] = threads
+        row["mip_gap"] = mip_gap
+        row["node_count"] = node_count
+        
+        append_metrics_row(metrics_csv, row)
+        
+
+        
     
     print("\nProceso completado para todas las semanas.")
     
