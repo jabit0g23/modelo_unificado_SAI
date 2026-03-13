@@ -323,38 +323,16 @@ def ejecutar_instancias_coloracion(
             # DISPERSIÓN (anti-concentración) - parámetros auxiliares
             # =========================
             THETA_DISPERSION = 1.4
-            dispersion_mode = "prefijo"  # "global" o "prefijo"
+            dispersion_mode = "activo"  # "global" o "prefijo"
             
             S_list = [s for s in df["S"].iloc[:, 0].tolist()]
             T_list = [int(t) for t in df["T"].iloc[:, 0].tolist()]  # asegura int para comparar tau<=t
             T_list = sorted(T_list)
             
             KI_map = df['KI_s'].set_index('S')['KI'].to_dict()
-            
-            # ---------
-            # Global: TOTIN[s] y CAPBLOCK[s]
-            # ---------
-            if dispersion_mode == "global":
-                TotIn_dict = {
-                    s: sum(int(DR_dict[(s, t)]) + int(DD_dict[(s, t)]) for t in T_list)
-                    for s in S_list
-                }
-                model.TOTIN = Param(model.S, initialize=TotIn_dict, within=NonNegativeIntegers)
-            
-                CapBlock_dict = {}
-                for s in S_list:
-                    tot = int(TotIn_dict[s])
-                    ki = max(1, int(KI_map[s]))
-                    cap = int(math.ceil(THETA_DISPERSION * tot / ki)) if tot > 0 else 0
-                    cap = min(cap, tot)
-                    CapBlock_dict[s] = cap
-            
-                model.CAPBLOCK = Param(model.S, initialize=CapBlock_dict, within=NonNegativeIntegers)
-            
-            # ---------
-            # Prefijo: TOTINP[s,t] y CAPBLOCKP[s,t]
-            # ---------
-            if dispersion_mode == "prefijo":
+
+
+            if dispersion_mode == "activo":
                 TotInP_dict = {}
                 CapBlockP_dict = {}
             
@@ -416,46 +394,10 @@ def ejecutar_instancias_coloracion(
             model.p  = Var(model.T, domain=NonNegativeIntegers, initialize=0.0)
             model.q  = Var(model.T, domain=NonNegativeIntegers, initialize=0.0)
             
-        
-            # ► Restricciones opcionales (según switches)
-            #   Cota inferior de flujo por turno:
-            #     fr + fd >= ceil( alpha[s]*TC[s,t] ) * u[s,b]
-            if usar_cota_inferior:
-                def lower_flow_rule(m, s, b, t):
-                    rhs = m.alpha[s] * m.TC[s, t]
-                    if rhs < 1:
-                        return Constraint.Skip
-                    return m.fr[s, b, t] + m.fd[s, b, t] >= math.ceil(rhs) * m.y[s, b, t]
-                model.constraint_lower_flow = Constraint(model.S, model.B, model.T, rule=lower_flow_rule)
-            
-                #   Cota de dispersión sobre el flujo ENTRANTE del turno (A):
-                #     fr[s,b,t] + fd[s,b,t] ≤ gamma[s] * Σ_b' (fr[s,b',t] + fd[s,b',t])
-                #   (se omite si no hay flujo total en el turno)
-                if usar_cota_superior:
-                    def upper_flow_dispersal_rule(m, s, b, t):
-                        if m.TC[s, t] == 0:
-                            return Constraint.Skip
-                        return (
-                            m.fr[s, b, t] + m.fd[s, b, t]
-                            <= m.gamma[s] * sum(m.fr[s, bp, t] + m.fd[s, bp, t] for bp in m.B)
-                        )
-                    model.constraint_upper_flow = Constraint(model.S, model.B, model.T, rule=upper_flow_dispersal_rule)
-           
-
             # =========================
             # Dispersion constraint
             # =========================
-            if dispersion_mode == "global":
-                def anti_concentracion_rule(m, s, b):
-                    if m.TOTIN[s] == 0:
-                        return Constraint.Skip
-                    return (
-                        sum(m.fr[s, b, t] + m.fd[s, b, t] for t in m.T)
-                        <= m.CAPBLOCK[s] * m.u[s, b]
-                    )
-                model.constraint_dispersion = Constraint(model.S, model.B, rule=anti_concentracion_rule)
-            
-            elif dispersion_mode == "prefijo":
+            if dispersion_mode == "activo":
                 def anti_concentracion_prefijo_rule(m, s, b, t):
                     if m.TOTINP[s, t] == 0:
                         return Constraint.Skip
@@ -906,10 +848,6 @@ def ejecutar_instancias_coloracion(
             "semana": semana_actual,
             "participacion": str(PARTICIPACION_C),
             "fase": "final",
-            "usar_cota_inferior": bool(usar_cota_inferior),
-            "usar_cota_superior": bool(usar_cota_superior),
-            "beta_alpha": float(beta_alpha),
-            "gamma_val": float(gamma_val),
             "resultado_xlsx": resultado_file_semana,
             "resultado_distancias": resultado_distancias_file_semana,
         

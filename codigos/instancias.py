@@ -52,9 +52,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
 
     C_POR_PILA = {b: NIVELES_POR_BLOQUE[b] for b in B}
     PILAS_TOTALES_POR_BLOQUE = {b: BAHIAS_POR_BLOQUE[b] * ROWS_POR_BLOQUE[b] for b in B}
-    PILAS_REEFER_POR_BLOQUE = {b: BAHIAS_REEFER_BLOQUE[b] * ROWS_POR_BLOQUE[b] for b in B}
-    PAIRS_TOTALES_POR_BLOQUE = {b: BAHIAS_POR_BLOQUE[b] * (ROWS_POR_BLOQUE[b] // 2) for b in B}
-    PAIRS_REEFER_POR_BLOQUE = {b: BAHIAS_REEFER_BLOQUE[b] * (ROWS_POR_BLOQUE[b] // 2) for b in B}
+    PAIRS_TOTALES_POR_BLOQUE = {b: (BAHIAS_POR_BLOQUE[b] // 2) * ROWS_POR_BLOQUE[b] for b in B}
+    UNIDADES_REEFER_POR_BLOQUE = {b: BAHIAS_REEFER_BLOQUE[b] * ROWS_POR_BLOQUE[b] for b in B }
 
     # ───────────── Carga de insumos de la semana ─────────────
     ruta_base_semana = os.path.join(resultados_dir, "instancias_magdalena", f"{semana}")
@@ -244,33 +243,34 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     # Modo pila: asigna por pilas (20’) o pares de pilas (40’), respetando disponibilidad y reefer.
     def redistribuir_pila(
         inventario_total, es_reefer, es_40_pies,
-        pilas_oc, pilas_reefer_oc, pares_oc, pares_reefer_oc,
-        permitir_fallback_40Como20=True
+        pilas_oc, pares_oc, reef_units_oc
     ):
         inv_aj = np.zeros(len(B), dtype=int)
         restante = int(inventario_total)
-
-        # Disponibilidades
-        def libres_pilas_tot(b): return max(0, int(PILAS_TOTALES_POR_BLOQUE[b]) - int(pilas_oc[b]))
-        def libres_pilas_ree(b): return max(0, int(PILAS_REEFER_POR_BLOQUE[b]) - int(pilas_reefer_oc[b]))
-
+    
+        def libres_pilas_tot(b):
+            return max(0, int(PILAS_TOTALES_POR_BLOQUE[b]) - int(pilas_oc[b]))
+    
         def libres_pairs_tot(b):
             by_pairs = max(0, int(PAIRS_TOTALES_POR_BLOQUE[b]) - int(pares_oc[b]))
             by_pilas = libres_pilas_tot(b) // 2
             return min(by_pairs, by_pilas)
-
+    
+        def libres_reef_units(b):
+            return max(0, int(UNIDADES_REEFER_POR_BLOQUE[b]) - int(reef_units_oc[b]))
+    
+        def libres_pilas_ree(b):
+            return min(libres_pilas_tot(b), libres_reef_units(b))
+    
         def libres_pairs_ree(b):
-            by_pairs = max(0, int(PAIRS_REEFER_POR_BLOQUE[b]) - int(pares_reefer_oc[b]))
-            by_pilas = libres_pilas_ree(b) // 2
-            return min(by_pairs, by_pilas)
-
-        # Orden preferente
+            return min(libres_pairs_tot(b), libres_reef_units(b))
+    
         if es_40_pies:
             candidatos = [b for b in B if (libres_pairs_ree(b) if es_reefer else libres_pairs_tot(b)) > 0]
             orden = sorted(
                 candidatos,
-                key=lambda x: (libres_pairs_ree(x), libres_pilas_ree(x)) if es_reefer
-                else (libres_pairs_tot(x), libres_pilas_tot(x)),
+                key=lambda x: (libres_pairs_ree(x), libres_pairs_tot(x)) if es_reefer
+                else libres_pairs_tot(x),
                 reverse=True
             )
         else:
@@ -281,69 +281,75 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
                 else libres_pilas_tot(x),
                 reverse=True
             )
-
+    
         if not orden:
-            return inv_aj, pilas_oc, pilas_reefer_oc, pares_oc, pares_reefer_oc, restante
-
+            return inv_aj, pilas_oc, pares_oc, reef_units_oc, restante
+    
         k = min(num_bloques_heur(inventario_total), len(orden))
         usar = orden[:k]
-
+    
+        def asignar_20(b, q_cont):
+            nonlocal restante
+            if q_cont <= 0 or restante <= 0:
+                return 0
+    
+            cap_pila = int(C_POR_PILA[b])   # 5 contenedores por pila
+            pilas_nec = int(math.ceil(q_cont / max(1, cap_pila)))
+    
+            disp = libres_pilas_ree(b) if es_reefer else libres_pilas_tot(b)
+            if disp <= 0:
+                return 0
+    
+            if pilas_nec > disp:
+                pilas_nec = disp
+                q_cont = pilas_nec * cap_pila
+    
+            q_cont = int(q_cont)
+            if q_cont <= 0:
+                return 0
+    
+            idx = B.index(b)
+            inv_aj[idx] += q_cont
+            pilas_oc[b] += pilas_nec
+            if es_reefer:
+                reef_units_oc[b] += pilas_nec
+    
+            restante -= q_cont
+            return q_cont
+    
         def asignar_40(b, q_cont):
             nonlocal restante
             if q_cont <= 0 or restante <= 0:
                 return 0
-            cap_par = int(NIVELES_POR_BLOQUE[b])  # cont por par
+    
+            cap_par = int(C_POR_PILA[b])    # 5 contenedores por par de pilas
             pares_nec = int(math.ceil(q_cont / max(1, cap_par)))
+    
             disp = libres_pairs_ree(b) if es_reefer else libres_pairs_tot(b)
             if disp <= 0:
                 return 0
+    
             if pares_nec > disp:
                 pares_nec = disp
                 q_cont = pares_nec * cap_par
+    
             q_cont = int(q_cont)
             if q_cont <= 0:
                 return 0
-
+    
             idx = B.index(b)
             inv_aj[idx] += q_cont
             pares_oc[b] += pares_nec
             pilas_oc[b] += 2 * pares_nec
             if es_reefer:
-                pares_reefer_oc[b] += pares_nec
-                pilas_reefer_oc[b] += 2 * pares_nec
-
+                reef_units_oc[b] += pares_nec
+    
             restante -= q_cont
             return q_cont
-
-        def asignar_20(b, q_cont):
-            nonlocal restante
-            if q_cont <= 0 or restante <= 0:
-                return 0
-            cap_pila = int(C_POR_PILA[b])  # cont por pila
-            pilas_nec = int(math.ceil(q_cont / max(1, cap_pila)))
-            disp_tot = libres_pilas_tot(b)
-            disp = min(disp_tot, libres_pilas_ree(b)) if es_reefer else disp_tot
-            if disp <= 0:
-                return 0
-            if pilas_nec > disp:
-                pilas_nec = disp
-                q_cont = pilas_nec * cap_pila
-            q_cont = int(q_cont)
-            if q_cont <= 0:
-                return 0
-
-            idx = B.index(b)
-            inv_aj[idx] += q_cont
-            pilas_oc[b] += pilas_nec
-            if es_reefer:
-                pilas_reefer_oc[b] += pilas_nec
-
-            restante -= q_cont
-            return q_cont
-
-        # 1) Emparejado (40')
+    
+        cuota = max(1, inventario_total // max(1, k))
+    
         if es_40_pies:
-            cuota = max(1, inventario_total // max(1, k))
             for b in usar:
                 if restante <= 0:
                     break
@@ -356,10 +362,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
                 if restante <= 0:
                     break
                 asignar_40(b, restante)
-
-        # 2) Directo pilas (20')
-        if not es_40_pies:
-            cuota = max(1, inventario_total // max(1, k))
+        else:
             for b in usar:
                 if restante <= 0:
                     break
@@ -372,28 +375,9 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
                 if restante <= 0:
                     break
                 asignar_20(b, restante)
-
-        # 3) Fallback 40' → 2x20 (✅ FIX: restas correctas)
-        if es_40_pies and permitir_fallback_40Como20 and restante > 0:
-            q20_equiv = 2 * restante
-            asig20 = 0
-            orden20 = sorted(
-                [b for b in B if (libres_pilas_ree(b) if es_reefer else libres_pilas_tot(b)) > 0],
-                key=lambda x: (libres_pilas_ree(x), libres_pilas_tot(x)) if es_reefer
-                else libres_pilas_tot(x),
-                reverse=True
-            )
-            for b in orden20:
-                if q20_equiv <= 0:
-                    break
-                assigned = asignar_20(b, q20_equiv)
-                asig20 += assigned
-                q20_equiv -= assigned
-
-            cont40_equiv = asig20 // 2
-            restante = max(0, restante - cont40_equiv)
-
-        return inv_aj, pilas_oc, pilas_reefer_oc, pares_oc, pares_reefer_oc, restante
+    
+        return inv_aj, pilas_oc, pares_oc, reef_units_oc, restante
+    
 
     # ───────── Selección de segregaciones (criterio Patio + prioridad) ─────────
     def analyze_column(df, column_name, location_column, min_value=0):
@@ -513,7 +497,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
 
     # ───────── Construcción de la lista final de segregaciones ─────────
     load_criterios = analyze_column(df_flujos_all_sb, 'LOAD', 'ime_fm', min_value=15) #original 15
-    dsch_criterios = analyze_column(df_flujos_all_sb, 'DSCH', 'ime_to', min_value=0) #original 0
+    dsch_criterios = analyze_column(df_flujos_all_sb, 'DSCH', 'ime_to', min_value=1) #original 0
     recv_criterios = analyze_column(df_flujos_all_sb, 'RECV', 'ime_to', min_value=25) #original 25
     dlvr_criterios = analyze_dlvr(df_flujos_all_sb, min_value=35) #original 35
 
@@ -554,9 +538,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     bahias_ocupadas_global = {b: 0 for b in B}
     bahias_reefer_ocupadas_global = {b: 0 for b in B}
     pilas_ocupadas_global = {b: 0 for b in B}
-    pilas_reefer_ocupadas_global = {b: 0 for b in B}
     pares_ocupados_global = {b: 0 for b in B}
-    pares_reefer_ocupados_global = {b: 0 for b in B}
+    reefer_units_ocupadas_global = {b: 0 for b in B}
 
     # 1) Precalcular info por segregación (para poder estimar "restantes")
     seg_infos = []
@@ -606,19 +589,19 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
 
         elif cap_mode == "pila":
             pilas_oc_tmp = pilas_ocupadas_global.copy()
-            pilas_ree_tmp = pilas_reefer_ocupadas_global.copy()
             pares_oc_tmp = pares_ocupados_global.copy()
-            pares_ree_tmp = pares_reefer_ocupados_global.copy()
+            reef_tmp = reefer_units_ocupadas_global.copy()
 
-            inv_aj, pilas_oc_tmp, pilas_ree_tmp, pares_oc_tmp, pares_ree_tmp, restante = redistribuir_pila(
+            inv_aj, pilas_oc_tmp, pares_oc_tmp, reef_tmp, restante = redistribuir_pila(
                 inv_total, es_reefer, es_40,
-                pilas_oc_tmp, pilas_ree_tmp,
-                pares_oc_tmp, pares_ree_tmp
+                pilas_oc_tmp, pares_oc_tmp, reef_tmp
             )
         else:
             raise ValueError("cap_mode debe ser 'bahia' o 'pila'")
 
         inv_asignado = int(inv_aj.sum())
+        
+        
 
         if restante > 0 or inv_asignado != inv_total:
             # 👉 Aquí va el reporte “bahías necesarias” para todas las segregaciones restantes
@@ -654,9 +637,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             bahias_reefer_ocupadas_global = bahias_ree_tmp
         else:
             pilas_ocupadas_global = pilas_oc_tmp
-            pilas_reefer_ocupadas_global = pilas_ree_tmp
             pares_ocupados_global = pares_oc_tmp
-            pares_reefer_ocupados_global = pares_ree_tmp
+            reefer_units_ocupadas_global = reef_tmp
 
         inventario_ajustado[segregacion] = inv_aj
         ajustes[segregacion] = int(info["ajuste"])
@@ -678,7 +660,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     else:
         df_Cb = pd.DataFrame({'B': B, 'C': [C_POR_PILA[b] for b in B]})
         df_VSb = pd.DataFrame({'B': B, 'VS': [PILAS_TOTALES_POR_BLOQUE[b] for b in B]})
-        df_VSRb = pd.DataFrame({'B': B, 'VSR': [PILAS_REEFER_POR_BLOQUE[b] for b in B]})
+        df_VSRb = pd.DataFrame({'B': B, 'VSR': [UNIDADES_REEFER_POR_BLOQUE[b] for b in B]})
 
     df_teu = pd.DataFrame({
         'S': df_S['S'],

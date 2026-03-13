@@ -206,12 +206,12 @@ def build_ex_rtg(B_C, BLOQUES, allowed_pairs):
 def generar_instancias_gruas(semanas, participacion, resultados_dir):
     
     # Cantidad de grúas por tipo
-    N_RTG = 5 #14
-    N_RS  = 9 #11
+    N_RTG = 14 #14
+    N_RS  = 11 #11
 
     # Productividades por tipo (mov/hr)
-    MU_RTG = 15 #30
-    MU_RS  = 10 #20
+    MU_RTG = 30 #30
+    MU_RS  = 20 #20
 
     resultados_dir = Path(resultados_dir)
     inst_magdalena_root = resultados_dir / "instancias_magdalena"

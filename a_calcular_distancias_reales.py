@@ -8,10 +8,10 @@ from collections import defaultdict
 # CONFIG
 # =========================
 
-ROOT_SEMANAS = r"resultados_generados_bahia_criterio_ii_p68/instancias_magdalena"
-OUTPUT = r"resultados_generados_bahia_criterio_ii_p68/metrics"
+ROOT_SEMANAS = r"resultados_generados_pila_criterio_ii_test/instancias_magdalena"
+OUTPUT = r"resultados_generados_pila_criterio_ii_test/metrics"
 
-ROOT_RESULTADOS_MAGDALENA = r"resultados_generados_bahia_criterio_ii_p68/resultados_magdalena"
+ROOT_RESULTADOS_MAGDALENA = r"resultados_generados_pila_criterio_ii_test/resultados_magdalena"
 DIST_MODELO_FILENAME_FMT = "Distancias_Modelo_{semana}_68.xlsx"
 DIST_MODELO_GLOB = "Distancias_Modelo_*_68.xlsx"
 DIST_MODELO_SHEET = None

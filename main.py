@@ -14,8 +14,7 @@ from modelo_gruas_maxmin import ejecutar_instancias_gruas_maxmin
 # (A) Semanas
 ANIO = 2022
 
-#"2022-02-07", "2022-02-21","2022-02-28", "2022-03-14"
-SEMANAS =  ["2022-04-04", "2022-04-18","2022-05-02", "2022-05-09", "2022-05-16", "2022-05-23", "2022-05-30", "2022-06-06", "2022-06-13", "2022-06-20",  "2022-07-04", "2022-07-11", "2022-07-18", "2022-07-25", "2022-08-01", "2022-08-08", "2022-08-15", "2022-08-22", "2022-08-29", "2022-09-05", "2022-09-12", "2022-09-19", "2022-09-26", "2022-10-03", "2022-10-10", "2022-10-17", "2022-10-24", "2022-10-31", "2022-11-07", "2022-11-14", "2022-11-21", "2022-11-28", "2022-12-05", "2022-12-19", "2022-12-26"]
+SEMANAS =  ["2022-03-07", "2022-03-14", "2022-03-21", "2022-04-11", "2022-04-18", "2022-04-25", "2022-06-20", "2022-06-27", "2022-12-12"]
 
 USAR_RANGO = False
 ISO_WEEK_INI = 41
@@ -27,11 +26,11 @@ CRITERIO = "criterio_ii" # "criterio_ii" / "criterio_iii"
 OBJETIVO_GRUAS = "maxmin"  # "maxmin" o "minmax"
 
 TURNOS = list(range(1, 22))  # 1..21
-CAP_MODE = "bahia"   # cambiar entre "pila" y "bahia"
+CAP_MODE = "pila"   # cambiar entre "pila" y "bahia"
 
 # (C) Switches de pasos 
 EJECUTAR = {
-    "instancias_coloracion": False,
+    "instancias_coloracion": True,
     "modelo_coloracion":     True,
     "guardar_csv":           False,
     "instancias_gruas":      False,
@@ -41,7 +40,7 @@ EJECUTAR = {
 # (D) Rutas
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 ESTATICOS  = os.path.join(BASE_DIR, "archivos_estaticos")
-RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_p{PARTICIPACION}_no_filtros")
+RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_test")
 BASE_INST  = os.path.join(RESULTADOS, "instancias_camila")
 BASE_RES   = os.path.join(RESULTADOS, "resultados_camila")
 

@@ -6,7 +6,7 @@ import numpy as np
 # =========================================================
 # CONFIG
 # =========================================================
-CSV_PATH = Path("resultados_generados_bahia_criterio_ii_p68/metrics/metrics_magdalena.csv")
+CSV_PATH = Path("resultados_generados_pila_criterio_ii_test/metrics/metrics_magdalena.csv")
 
 # Datos de hardware/software que NO vienen completos en el CSV
 SYSTEM_INFO = {
@@ -22,7 +22,7 @@ SYSTEM_INFO = {
 FILTERS = {
     "modelo": "magdalena",
     "fase": "final",
-    "participacion": 68,   # usa None si no quieres filtrar por participación
+    "participacion": None,   # usa None si no quieres filtrar por participación
 }
 
 # Si después de filtrar quedan filas repetidas por semana, conserva la última
