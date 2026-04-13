@@ -30,27 +30,62 @@ def _has_solution(model):
     except:
         return False
 
-def _dump_infeasible_artifacts(model, xlsx_path, logger=None):
-    ilp_path = _swap_ext(xlsx_path, ".ilp")  # mismo nombre, extensión .ilp
-    iis_path = _swap_ext(xlsx_path, ".iis")
+def _dump_infeasible_artifacts(model, xlsx_path, logger=None, iis_time_limit=30):
+    ilp_path = _swap_ext(xlsx_path, ".lp")      # modelo completo
+    iis_path = _swap_ext(xlsx_path, ".ilp")     # IIS de Gurobi
 
-    # Volcar LP (LP format; usas .ilp por convenio)
+    # Volcar el modelo completo
     model.write(ilp_path, format="lp", io_options={'symbolic_solver_labels': True})
-    # IIS (diagnóstico)
+
+    iis_solver = None
     try:
-        write_iis(model, iis_path, solver="gurobi")
+        # Crear solver persistente para controlar parámetros del IIS
+        iis_solver = SolverFactory("gurobi_persistent")
+        iis_solver.set_instance(model, symbolic_solver_labels=True)
+
+        grb = iis_solver._solver_model   # modelo gurobi subyacente
+
+        # Límite de tiempo para el IIS
+        grb.setParam("TimeLimit", float(iis_time_limit))
+
+        # Opcional: menos hilos para que no te reviente la máquina
+        # grb.setParam("Threads", 1)
+
+        # Opcional: probar otro método de IIS
+        # grb.setParam("IISMethod", 1)
+
+        grb.computeIIS()
+        grb.write(iis_path)
+
+        try:
+            is_minimal = grb.getAttr("IISMinimal")
+            if logger:
+                logger.info(f"IIS escrito en {iis_path} | IISMinimal={is_minimal}")
+        except Exception:
+            if logger:
+                logger.info(f"IIS escrito en {iis_path}")
+
     except Exception as e:
-        if logger: logger.warning(f"No se pudo escribir IIS: {e}")
+        if logger:
+            logger.warning(f"No se pudo escribir IIS: {e}")
+
+    finally:
+        try:
+            if iis_solver is not None and hasattr(iis_solver, "close"):
+                iis_solver.close()
+        except Exception:
+            pass
 
     # Borra un .xlsx viejo si existía
     try:
         if os.path.exists(xlsx_path):
             os.remove(xlsx_path)
     except Exception as e:
-        if logger: logger.warning(f"No se pudo eliminar {xlsx_path}: {e}")
+        if logger:
+            logger.warning(f"No se pudo eliminar {xlsx_path}: {e}")
 
-    if logger: logger.error(f"Modelo infactible/aborted sin incumbente. Artefactos: {ilp_path}, {iis_path}")
-
+    if logger:
+        logger.error(f"Modelo infactible/aborted sin incumbente. Artefactos: {ilp_path}, {iis_path}")
 
 def ejecutar_instancias_gruas_maxmin(semanas, turnos, participacion, base_instancias, base_resultados):
     for semana in semanas:

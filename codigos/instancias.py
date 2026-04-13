@@ -8,7 +8,7 @@ from pathlib import Path
 warnings.filterwarnings("ignore", category=FutureWarning)
 
 
-def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, cap_mode="pila"):
+def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, cap_mode, aux_ki):
 
     # ───────────── Parámetros base y estáticos ─────────────
     T = list(range(1, 22))
@@ -44,6 +44,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     }
 
     NIVELES_POR_BLOQUE = {b: 5 for b in B}
+    
+    
 
     # ────────── Capacidades derivadas (bahía/pila) ──────────
     C_POR_BAHIA = {b: ROWS_POR_BLOQUE[b] * NIVELES_POR_BLOQUE[b] for b in B}
@@ -243,10 +245,14 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     # Modo pila: asigna por pilas (20’) o pares de pilas (40’), respetando disponibilidad y reefer.
     def redistribuir_pila(
         inventario_total, es_reefer, es_40_pies,
-        pilas_oc, pares_oc, reef_units_oc
+        pilas_oc, pares_oc,
+        pilas_reefer20_oc, pares_reefer40_oc
     ):
         inv_aj = np.zeros(len(B), dtype=int)
         restante = int(inventario_total)
+    
+        def ceil_div(a, b):
+            return 0 if a <= 0 else (a + b - 1) // b
     
         def libres_pilas_tot(b):
             return max(0, int(PILAS_TOTALES_POR_BLOQUE[b]) - int(pilas_oc[b]))
@@ -256,34 +262,53 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             by_pilas = libres_pilas_tot(b) // 2
             return min(by_pairs, by_pilas)
     
-        def libres_reef_units(b):
-            return max(0, int(UNIDADES_REEFER_POR_BLOQUE[b]) - int(reef_units_oc[b]))
+        # ---- uso de enchufes reefer por tipo ----
+        def plugs20_usados(b):
+            return ceil_div(int(pilas_reefer20_oc[b]), int(ROWS_POR_BLOQUE[b]))
     
-        def libres_pilas_ree(b):
-            return min(libres_pilas_tot(b), libres_reef_units(b))
+        def plugs40_usados(b):
+            return ceil_div(int(pares_reefer40_oc[b]), int(ROWS_POR_BLOQUE[b]))
     
-        def libres_pairs_ree(b):
-            return min(libres_pairs_tot(b), libres_reef_units(b))
+        def plugs_libres(b):
+            return max(
+                0,
+                int(BAHIAS_REEFER_BLOQUE[b]) - plugs20_usados(b) - plugs40_usados(b)
+            )
     
+        def libres_pilas_ree_20(b):
+            rows = int(ROWS_POR_BLOQUE[b])
+            usadas = int(pilas_reefer20_oc[b])
+            plugs20 = plugs20_usados(b)
+            slack_mismo_tipo = plugs20 * rows - usadas
+            return slack_mismo_tipo + plugs_libres(b) * rows
+    
+        def libres_pairs_ree_40(b):
+            rows = int(ROWS_POR_BLOQUE[b])
+            usados = int(pares_reefer40_oc[b])
+            plugs40 = plugs40_usados(b)
+            slack_mismo_tipo = plugs40 * rows - usados
+            return slack_mismo_tipo + plugs_libres(b) * rows
+    
+        # ---- orden preferente ----
         if es_40_pies:
-            candidatos = [b for b in B if (libres_pairs_ree(b) if es_reefer else libres_pairs_tot(b)) > 0]
+            candidatos = [b for b in B if (libres_pairs_ree_40(b) if es_reefer else     libres_pairs_tot(b)) > 0]
             orden = sorted(
                 candidatos,
-                key=lambda x: (libres_pairs_ree(x), libres_pairs_tot(x)) if es_reefer
+                key=lambda x: (libres_pairs_ree_40(x), libres_pairs_tot(x)) if es_reefer
                 else libres_pairs_tot(x),
                 reverse=True
             )
         else:
-            candidatos = [b for b in B if (libres_pilas_ree(b) if es_reefer else libres_pilas_tot(b)) > 0]
+            candidatos = [b for b in B if (libres_pilas_ree_20(b) if es_reefer else     libres_pilas_tot(b)) > 0]
             orden = sorted(
                 candidatos,
-                key=lambda x: (libres_pilas_ree(x), libres_pilas_tot(x)) if es_reefer
+                key=lambda x: (libres_pilas_ree_20(x), libres_pilas_tot(x)) if es_reefer
                 else libres_pilas_tot(x),
                 reverse=True
             )
     
         if not orden:
-            return inv_aj, pilas_oc, pares_oc, reef_units_oc, restante
+            return inv_aj, pilas_oc, pares_oc, pilas_reefer20_oc, pares_reefer40_oc,     restante
     
         k = min(num_bloques_heur(inventario_total), len(orden))
         usar = orden[:k]
@@ -296,7 +321,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             cap_pila = int(C_POR_PILA[b])   # 5 contenedores por pila
             pilas_nec = int(math.ceil(q_cont / max(1, cap_pila)))
     
-            disp = libres_pilas_ree(b) if es_reefer else libres_pilas_tot(b)
+            disp = min(libres_pilas_tot(b), libres_pilas_ree_20(b)) if es_reefer else     libres_pilas_tot(b)
             if disp <= 0:
                 return 0
     
@@ -312,7 +337,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             inv_aj[idx] += q_cont
             pilas_oc[b] += pilas_nec
             if es_reefer:
-                reef_units_oc[b] += pilas_nec
+                pilas_reefer20_oc[b] += pilas_nec
     
             restante -= q_cont
             return q_cont
@@ -322,10 +347,10 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             if q_cont <= 0 or restante <= 0:
                 return 0
     
-            cap_par = int(C_POR_PILA[b])    # 5 contenedores por par de pilas
+            cap_par = int(C_POR_PILA[b])    # 5 contenedores por par
             pares_nec = int(math.ceil(q_cont / max(1, cap_par)))
     
-            disp = libres_pairs_ree(b) if es_reefer else libres_pairs_tot(b)
+            disp = min(libres_pairs_tot(b), libres_pairs_ree_40(b)) if es_reefer else     libres_pairs_tot(b)
             if disp <= 0:
                 return 0
     
@@ -342,7 +367,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
             pares_oc[b] += pares_nec
             pilas_oc[b] += 2 * pares_nec
             if es_reefer:
-                reef_units_oc[b] += pares_nec
+                pares_reefer40_oc[b] += pares_nec
     
             restante -= q_cont
             return q_cont
@@ -376,7 +401,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
                     break
                 asignar_20(b, restante)
     
-        return inv_aj, pilas_oc, pares_oc, reef_units_oc, restante
+        return inv_aj, pilas_oc, pares_oc, pilas_reefer20_oc, pares_reefer40_oc, restante
+    
     
 
     # ───────── Selección de segregaciones (criterio Patio + prioridad) ─────────
@@ -497,7 +523,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
 
     # ───────── Construcción de la lista final de segregaciones ─────────
     load_criterios = analyze_column(df_flujos_all_sb, 'LOAD', 'ime_fm', min_value=15) #original 15
-    dsch_criterios = analyze_column(df_flujos_all_sb, 'DSCH', 'ime_to', min_value=1) #original 0
+    dsch_criterios = analyze_column(df_flujos_all_sb, 'DSCH', 'ime_to', min_value=0) #original 0
     recv_criterios = analyze_column(df_flujos_all_sb, 'RECV', 'ime_to', min_value=25) #original 25
     dlvr_criterios = analyze_dlvr(df_flujos_all_sb, min_value=35) #original 35
 
@@ -539,7 +565,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     bahias_reefer_ocupadas_global = {b: 0 for b in B}
     pilas_ocupadas_global = {b: 0 for b in B}
     pares_ocupados_global = {b: 0 for b in B}
-    reefer_units_ocupadas_global = {b: 0 for b in B}
+    pilas_reefer20_ocupadas_global = {b: 0 for b in B}
+    pares_reefer40_ocupados_global = {b: 0 for b in B}
 
     # 1) Precalcular info por segregación (para poder estimar "restantes")
     seg_infos = []
@@ -590,12 +617,15 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
         elif cap_mode == "pila":
             pilas_oc_tmp = pilas_ocupadas_global.copy()
             pares_oc_tmp = pares_ocupados_global.copy()
-            reef_tmp = reefer_units_ocupadas_global.copy()
-
-            inv_aj, pilas_oc_tmp, pares_oc_tmp, reef_tmp, restante = redistribuir_pila(
+            pilas_ree20_tmp = pilas_reefer20_ocupadas_global.copy()
+            pares_ree40_tmp = pares_reefer40_ocupados_global.copy()
+            
+            inv_aj, pilas_oc_tmp, pares_oc_tmp, pilas_ree20_tmp, pares_ree40_tmp, restante = redistribuir_pila(
                 inv_total, es_reefer, es_40,
-                pilas_oc_tmp, pares_oc_tmp, reef_tmp
+                pilas_oc_tmp, pares_oc_tmp,
+                pilas_ree20_tmp, pares_ree40_tmp
             )
+            
         else:
             raise ValueError("cap_mode debe ser 'bahia' o 'pila'")
 
@@ -638,12 +668,17 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
         else:
             pilas_ocupadas_global = pilas_oc_tmp
             pares_ocupados_global = pares_oc_tmp
-            reefer_units_ocupadas_global = reef_tmp
+            pilas_reefer20_ocupadas_global = pilas_ree20_tmp
+            pares_reefer40_ocupados_global = pares_ree40_tmp
 
         inventario_ajustado[segregacion] = inv_aj
         ajustes[segregacion] = int(info["ajuste"])
 
     # ───────── Armado de tablas de salida ─────────
+    df_MODE = pd.DataFrame({'mode': [cap_mode]})
+    df_ROWSb = pd.DataFrame({'B': B, 'ROWS': [ROWS_POR_BLOQUE[b] for b in B]})
+    df_Eb = pd.DataFrame({'B': B, 'E': [BAHIAS_REEFER_BLOQUE[b] for b in B]})
+    df_VP = pd.DataFrame({'B': B, 'VP': [PAIRS_TOTALES_POR_BLOQUE[b] for b in B]})
     df_B = pd.DataFrame({'B': B})
     df_S = pd.DataFrame({'S': [f'S{i + 1}' for i in range(len(segregaciones_finales))], 'Segregacion': segregaciones_finales})
     df_T = pd.DataFrame({'T': T})
@@ -752,24 +787,29 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
         )
 
     # ───────── Parámetros K (KS fijo; KI fijo y KI por flujo) ─────────
-    def calcular_ki(flujo):
-        if flujo <= 140:
+    
+    #exp=  70 y 210
+        
+    def calcular_ki(flujo, aux_ki):
+        if flujo <= aux_ki:
             return 1
-        elif flujo <= 280:
+        elif flujo <= 2*aux_ki:
             return 2
-        elif flujo <= 420:
+        elif flujo <= 3*aux_ki:
             return 3
-        elif flujo <= 595:
+        elif flujo <= 4*aux_ki:
             return 4
-        else:
+        elif flujo <= 5*aux_ki:
             return 5
+        else:
+            return 6
 
     df_KS = pd.DataFrame({'S': df_S['S'], 'Segregacion': df_S['Segregacion'], 'KS': [9] * len(df_S)})
     df_KI = pd.DataFrame({'S': df_S['S'], 'Segregacion': df_S['Segregacion'], 'KI': [1] * len(df_S)})
 
     flujos_por_seg = d_params.groupby('Segregacion')[['DR', 'DD']].sum()
     flujos_por_seg['Total_Flujo'] = flujos_por_seg['DR'] + flujos_por_seg['DD']
-    flujos_por_seg['KI'] = flujos_por_seg['Total_Flujo'].apply(calcular_ki)
+    flujos_por_seg['KI'] = flujos_por_seg['Total_Flujo'].apply(lambda x: calcular_ki(x, aux_ki))
     ki_map = flujos_por_seg['KI'].to_dict()
 
     df_KI_K = pd.DataFrame({
@@ -868,9 +908,13 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
     os.makedirs(out_dir, exist_ok=True)
     instancia_path = os.path.join(out_dir, f"Instancia_{semana}_{participacion_C}.xlsx")
     instancia_k_path = os.path.join(out_dir, f"Instancia_{semana}_{participacion_C}_K.xlsx")
-
+    
     # Versión estándar (KI fijo = 1)
     with pd.ExcelWriter(instancia_path, engine='openpyxl') as w:
+        df_VP.to_excel(w, sheet_name='VP_b', index=False)
+        df_MODE.to_excel(w, sheet_name='MODE', index=False)
+        df_ROWSb.to_excel(w, sheet_name='ROWS_b', index=False)
+        df_Eb.to_excel(w, sheet_name='E_b', index=False)
         df_B.to_excel(w, sheet_name='B', index=False)
         df_S.to_excel(w, sheet_name='S', index=False)
         df_T.to_excel(w, sheet_name='T', index=False)
@@ -891,6 +935,10 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, participacion_C, c
 
     # Versión _K (KI calculado por flujo)
     with pd.ExcelWriter(instancia_k_path, engine='openpyxl') as w:
+        df_VP.to_excel(w, sheet_name='VP_b', index=False)
+        df_MODE.to_excel(w, sheet_name='MODE', index=False)
+        df_ROWSb.to_excel(w, sheet_name='ROWS_b', index=False)
+        df_Eb.to_excel(w, sheet_name='E_b', index=False)
         df_B.to_excel(w, sheet_name='B', index=False)
         df_S.to_excel(w, sheet_name='S', index=False)
         df_T.to_excel(w, sheet_name='T', index=False)

@@ -19,7 +19,6 @@ from pyomo.environ import (
 )
 
 from pyomo.contrib.iis import write_iis
-import logging, sys, os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("magdalena")
@@ -36,10 +35,6 @@ def _safe_float(x) -> Optional[float]:
         return None
 
 def _gurobi_version_safe() -> Optional[str]:
-    """
-    Opción 1: gurobipy
-    Opción 2: gurobi_cl --version
-    """
     try:
         import gurobipy as gp
         v = gp.gurobi.version()  # (major, minor, technical)
@@ -58,10 +53,6 @@ def _gurobi_version_safe() -> Optional[str]:
         return None
 
 def _extract_gurobi_stats_from_results(res) -> Dict[str, Any]:
-    """
-    Intenta leer mip_gap y node_count desde Results (Pyomo).
-    Si no están, devuelve None y lo sacamos del log.
-    """
     mip_gap = None
     node_count = None
 
@@ -87,12 +78,6 @@ def _extract_gurobi_stats_from_results(res) -> Dict[str, Any]:
     }
 
 def _parse_gurobi_log_for_threads_gap_nodes(log_path: str) -> Dict[str, Any]:
-    """
-    Parsea log de Gurobi para:
-    - threads: "using up to X threads"
-    - node_count: "Explored N nodes"
-    - mip_gap: "gap ..."
-    """
     out = {"threads": None, "mip_gap": None, "node_count": None}
 
     if not log_path or not os.path.exists(log_path):
@@ -140,19 +125,14 @@ def _parse_gurobi_log_for_threads_gap_nodes(log_path: str) -> Dict[str, Any]:
 
     return out
 
-
-
 def _has_incumbent(res, model=None):
     tc = res.solver.termination_condition
     st = res.solver.status
 
-    # 1) Pyomo-style (cuando sí viene algo en res.solution)
     has_sol = hasattr(res, "solution") and res.solution and len(res.solution) > 0
 
-    # 2) Model-aware: si load_solutions=True, los valores están en las Vars
     if not has_sol and (model is not None):
         try:
-            # toma una variable y revisa si tiene algún valor distinto de None
             for v in model.component_data_objects(Var, active=True, descend_into=True):
                 if v.value is not None:
                     has_sol = True
@@ -160,18 +140,14 @@ def _has_incumbent(res, model=None):
         except Exception:
             pass
 
-    # Casos sin solución
-    from pyomo.opt import TerminationCondition as TC, SolverStatus
     if tc in (TC.infeasible, TC.invalidProblem, TC.error, TC.solverFailure):
         return False
 
-    # Óptimo / factible explícito
     if tc in (TC.optimal, TC.feasible):
         return True
 
-    # Limites benignos → válidos si hay algo cargado en el modelo
     user_limited = tc in tuple(x for x in (
-        getattr(TC, "userLimit", None),        # p.ej. SolutionLimit
+        getattr(TC, "userLimit", None),
         getattr(TC, "maxTimeLimit", None),
         getattr(TC, "resourceInterrupt", None),
         getattr(TC, "userInterrupt", None),
@@ -181,54 +157,48 @@ def _has_incumbent(res, model=None):
     if user_limited and has_sol:
         return True
 
-    # Algunos backends marcan aborted pero con solución (tu WARNING)
     if (st in (SolverStatus.aborted, SolverStatus.ok, SolverStatus.warning)) and has_sol:
         return True
 
     return False
 
-from pyomo.environ import SolverFactory
-
 def write_iis_gurobi_with_timelimit(pyomo_model, iis_file_name, timelimit_s=120, *, iis_method=None, log_file=None):
-    """
-    Calcula IIS con Gurobi (vía gurobi_persistent) con límite de tiempo.
-    Devuelve (path_escrito, iis_minimal_bool).
-    """
     solver = SolverFactory("gurobi_persistent")
     solver.set_instance(pyomo_model, symbolic_solver_labels=True)
 
-    grb = solver._solver_model  # modelo gurobipy interno
+    grb = solver._solver_model  
 
-    # Time limit para computeIIS (Gurobi lo respeta)
     grb.Params.TimeLimit = float(timelimit_s)
 
-    # Opcional: método de IIS (depende de versión; si no sabes, no lo toques)
     if iis_method is not None:
         grb.Params.IISMethod = int(iis_method)
 
-    # Opcional: log del IIS
     if log_file is not None:
         grb.Params.LogFile = str(log_file)
         grb.Params.LogToConsole = 0
 
     grb.computeIIS()
 
-    # Gurobi decide el formato por extensión; lo típico es .ilp
     if not iis_file_name.lower().endswith(".ilp"):
         iis_file_name = iis_file_name + ".ilp"
     grb.write(iis_file_name)
 
-    # IISMinimal = 1 si es irreducible/minimal; si se cortó por tiempo, típicamente queda 0
     iis_minimal = bool(getattr(grb, "IISMinimal", 0))
     return iis_file_name, iis_minimal
 
-
+# =========================================================
+# FUNCIÓN PRINCIPAL DE EJECUCIÓN
+# =========================================================
 def ejecutar_instancias_coloracion(
     semanas,
     participacion,
     resultados_dir
 ):
-
+    # =========================================================
+    # SWITCHES DE CONFIGURACIÓN
+    # =========================================================
+    ACTIVAR_PARETO = False  # <-- Cambia a True si quieres generar la curva de Pareto para R
+    VALOR_BASE_R = 348      # <-- Valor que se usará para la corrida principal/final
     
     semanas_a_procesar = semanas
     PARTICIPACION_C = participacion
@@ -247,24 +217,17 @@ def ejecutar_instancias_coloracion(
     
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     
-    # El print de cabecera general puede quedar fuera del bucle si se desea
     print("Iniciando procesamiento de optimización para múltiples semanas...")
-    
     semanas_infactibles = []
-    
     
     for semana_actual in semanas_a_procesar:
         print(f"\n--- Procesando Semana: {semana_actual} ---")
     
-        # Inicializar listas para almacenar resultados PARA LA SEMANA ACTUAL
-        # Esto asegura que cada archivo "Distancias_Modelo..." contenga solo los datos de su semana.
         resumen_semanal_actual = []
         resultados_segregacion_actual = []
         detalle_movimientos_actual = []
 
         directorio_datos_semanal = os.path.join(resultados_dir_script, "instancias_magdalena", semana_actual)
-
-        # Asegurar que el directorio exista (principalmente para la salida, ya que la instancia debe existir)
         os.makedirs(directorio_datos_semanal, exist_ok=True)
     
         archivo_instancia = os.path.join(directorio_datos_semanal, f"Instancia_{semana_actual}_{PARTICIPACION_C}_K.xlsx")
@@ -274,10 +237,9 @@ def ejecutar_instancias_coloracion(
         metrics_csv = os.path.join(resultados_dir_script, "metrics", "metrics_magdalena.csv")
     
         try:
-            # Verificar si el archivo de instancia existe ANTES de intentar leerlo
             if not os.path.exists(archivo_instancia):
                 print(f"ADVERTENCIA: Archivo de instancia no encontrado para la semana {semana_actual}: {archivo_instancia}. Saltando esta semana.")
-                continue # Pasar a la siguiente semana
+                continue 
     
             t_build0 = time.perf_counter()
             model = ConcreteModel()
@@ -297,8 +259,12 @@ def ejecutar_instancias_coloracion(
             model.C = Param(model.B, initialize=df['C_b'].set_index('B')['C'].to_dict())
             model.VS = Param(model.B, initialize=df['VS_b'].set_index('B')['VS'].to_dict())
             model.VSR = Param(model.B, initialize=df['VSR_b'].set_index('B')['VSR'].to_dict())
-            model.KS = Param(model.S, initialize=df['KS_s'].set_index('S')['KS'].to_dict())
+            
+            # Límite Inferior (Se mantiene KI, se elimina KS)
             model.KI = Param(model.S, initialize=df['KI_s'].set_index('S')['KI'].to_dict())
+            
+            # para ki fijo en 1:
+            # model.KI = Param(model.S, initialize={s: 1 for s in model.S})
     
             I0_dict = {(row['S'], row['B']): row['I0'] for _, row in df['I0_sb'].iterrows()}
             model.I0 = Param(model.S, model.B, initialize=I0_dict, within=NonNegativeIntegers)
@@ -318,19 +284,21 @@ def ejecutar_instancias_coloracion(
             lc_dict = {(row['S'], row['B']): row['LC'] for _, row in df['LC_sb'].iterrows()}
             model.LC = Param(model.S, model.B, initialize=lc_dict, within=NonNegativeIntegers)
             
+            model.VP = Param(model.B, initialize=df['VP_b'].set_index('B')['VP'].to_dict())
+            model.ROWS = Param(model.B, initialize=df['ROWS_b'].set_index('B')['ROWS'].to_dict())
+            model.E = Param(model.B, initialize=df['E_b'].set_index('B')['E'].to_dict())
 
             # =========================
-            # DISPERSIÓN (anti-concentración) - parámetros auxiliares
+            # DISPERSIÓN (anti-concentración)
             # =========================
             THETA_DISPERSION = 1.4
-            dispersion_mode = "activo"  # "global" o "prefijo"
+            dispersion_mode = "activo"  # "activo" o "falso"
             
             S_list = [s for s in df["S"].iloc[:, 0].tolist()]
-            T_list = [int(t) for t in df["T"].iloc[:, 0].tolist()]  # asegura int para comparar tau<=t
+            T_list = [int(t) for t in df["T"].iloc[:, 0].tolist()] 
             T_list = sorted(T_list)
             
             KI_map = df['KI_s'].set_index('S')['KI'].to_dict()
-
 
             if dispersion_mode == "activo":
                 TotInP_dict = {}
@@ -353,27 +321,30 @@ def ejecutar_instancias_coloracion(
             
                 model.TOTINP = Param(model.S, model.T, initialize=TotInP_dict, within=NonNegativeIntegers)
                 model.CAPBLOCKP = Param(model.S, model.T, initialize=CapBlockP_dict, within=NonNegativeIntegers)
-
             
             model.LE = Param(model.B, initialize=df['LE_b'].set_index('B')['LE'].to_dict())
             model.TEU = Param(model.S, initialize=df['TEU_s'].set_index('S')['TEU'].to_dict())
             model.OS = Param(initialize=1, mutable=True)
+            model.R = Param(model.S, initialize=df['R_s'].set_index('S')['R'].to_dict())
             
             C_mediana = float(pd.Series(df['C_b']['C']).astype(float).median())
-            es_pila = C_mediana <= 6.0
-            
-            if es_pila:
-                # En modo 'pila' no imponemos mínimo por turno al abrir/unidad
-                OI_dict = {row.B: 0.2 for _, row in df['C_b'].iterrows()}
+            if 'MODE' in df:
+                es_pila = str(df['MODE'].iloc[0, 0]).strip().lower() == 'pila'
             else:
-                # En modo 'bahía' mantén tu regla original OI=1/C[b]
-                OI_dict = {row.B: 1.0/float(row.C) for _, row in df['C_b'].iterrows()}
+                C_mediana = float(pd.Series(df['C_b']['C']).astype(float).median())
+                es_pila = C_mediana <= 6.0
+            
+            OI_dict = {row.B: 1.0 / float(row.C) for _, row in df['C_b'].iterrows()}
                 
             model.OI = Param(model.B, within=NonNegativeReals, initialize=OI_dict)
             
-            model.r = Param(initialize=348)
-            model.R = Param(model.S, initialize=df['R_s'].set_index('S')['R'].to_dict())
-    
+            # Parametro R mutable
+            model.r = Param(initialize=VALOR_BASE_R, mutable=True)
+            
+            S40 = [s for s in model.S if int(value(model.TEU[s])) == 2]
+            S20R = [s for s in model.S if int(value(model.TEU[s])) == 1 and int(value(model.R[s])) == 1]
+            S40R = [s for s in model.S if int(value(model.TEU[s])) == 2 and int(value(model.R[s])) == 1]
+            
             # Variables de decisión
             model.fr = Var(model.S, model.B, model.T, domain=NonNegativeIntegers, initialize=0.0)
             model.fc = Var(model.S, model.B, model.T, domain=NonNegativeIntegers, initialize=0.0)
@@ -383,16 +354,17 @@ def ejecutar_instancias_coloracion(
             model.y  = Var(model.S, model.B, model.T, domain=Binary, initialize=0)
             model.u  = Var(model.S, model.B, domain=Binary, initialize=0)
             
-            # v = nº de bahías asignadas a (s,b,t) → debe seguir siendo entera
             model.v  = Var(model.S, model.B, model.T, domain=NonNegativeIntegers, initialize=0)
-            # k = nº de bloques usados por s → entera
             model.k  = Var(model.S, domain=NonNegativeIntegers, initialize=0)
             
-            # inventario y cargas agregadas: continuas
             model.i  = Var(model.S, model.B, model.T, domain=NonNegativeIntegers, initialize=0.0)
             model.w  = Var(model.B, model.T, domain=NonNegativeIntegers, initialize=0.0)
             model.p  = Var(model.T, domain=NonNegativeIntegers, initialize=0.0)
             model.q  = Var(model.T, domain=NonNegativeIntegers, initialize=0.0)
+            
+            if es_pila:
+                model.g20 = Var(model.B, model.T, domain=NonNegativeIntegers, initialize=0)
+                model.g40 = Var(model.B, model.T, domain=NonNegativeIntegers, initialize=0)
             
             # =========================
             # Dispersion constraint
@@ -407,8 +379,15 @@ def ejecutar_instancias_coloracion(
                     )
                 model.constraint_dispersion_prefix = Constraint(model.S, model.B, model.T, rule=anti_concentracion_prefijo_rule)
                       
-           # =========================
-            
+            # =========================
+            if es_pila:
+                model.constraint_pairs_40 = ConstraintList()
+                for t in model.T:
+                    for b in model.B:
+                        model.constraint_pairs_40.add(
+                            expr=sum(model.v[s, b, t] for s in S40) <= model.VP[b]
+                        )
+                        
             # Restricciones (2)
             model.constraint_2 = ConstraintList()
             for t in model.T:
@@ -443,60 +422,42 @@ def ejecutar_instancias_coloracion(
                             expr = (model.v[s, b, t] - 1) * model.C[b] * model.OS + model.C[b] * model.OI[b] <= model.i[s, b, t]
                         )
      
-            # Restricciones (5)
+            # Restricciones (5 a 8)
             model.constraint_5 = ConstraintList()
+            model.constraint_6 = ConstraintList()
+            model.constraint_7 = ConstraintList()
+            model.constraint_8 = ConstraintList()
+            
             for t in model.T:
                 for s in model.S:
                     model.constraint_5.add(expr=sum(model.fr[s, b, t] for b in model.B) == model.DR[s, t])
-    
-            # Restricciones (6)
-            model.constraint_6 = ConstraintList()
-            for t in model.T:
-                for s in model.S:
                     model.constraint_6.add(expr=sum(model.fc[s, b, t] for b in model.B) == model.DC[s, t])
-    
-            # Restricciones (7)
-            model.constraint_7 = ConstraintList()
-            for t in model.T:
-                for s in model.S:
                     model.constraint_7.add(expr=sum(model.fd[s, b, t] for b in model.B) == model.DD[s, t])
-    
-            # Restricciones (8)
-            model.constraint_8 = ConstraintList()
-            for t in model.T:
-                for s in model.S:
                     model.constraint_8.add(expr=sum(model.fe[s, b, t] for b in model.B) == model.DE[s, t])
     
-            # Restricciones (9)
+            # Restricciones (9 y 10)
             model.constraint_9 = ConstraintList()
+            model.constraint_10 = ConstraintList()
             for t in model.T:
                 for b in model.B:
                     for s in model.S:
                         model.constraint_9.add(
                             expr=model.fr[s, b, t] + model.fd[s, b, t] <= (model.DR[s, t] + model.DD[s, t]) * model.y[s, b, t]
                         )
-    
-            # Restricciones (10)
-            model.constraint_10 = ConstraintList()
-            for t in model.T:
-                for b in model.B:
-                    for s in model.S:
                         model.constraint_10.add(expr=(model.fr[s, b, t] + model.fd[s, b, t]) >= model.y[s, b, t])
     
-            # Restricciones (11)
+            # Restricciones (11 a 13)
             model.constraint_11 = ConstraintList()
             for b in model.B:
                 for s in model.S:
                     model.constraint_11.add(expr=model.u[s, b] <= sum(model.y[s, b, t] for t in model.T))
     
-            # Restricción (12)
             model.constraint_12 = ConstraintList()
             for t in model.T:
                 for b in model.B:
                     for s in model.S:
                         model.constraint_12.add(expr=model.u[s, b] >= model.y[s, b, t])
     
-            # Restricciones (13)
             model.constraint_13 = ConstraintList()
             for t in model.T:
                 for b in model.B:
@@ -509,15 +470,7 @@ def ejecutar_instancias_coloracion(
             for s in model.S:
                 model.constraint_14.add(expr=model.k[s] == sum(model.u[s, b] for b in model.B))
     
-            # Restricciones (15)
-            model.constraint_15 = ConstraintList()
-            for s in model.S:
-                if sum(model.DR[s, t] for t in model.T) == 0 and sum(model.DD[s, t] for t in model.T) == 0:
-                    model.constraint_15.add(model.k[s] == 0)
-                else:
-                    model.constraint_15.add(model.k[s] <= model.KS[s])
-    
-            # Restricciones (16)
+            # Restricciones (16) - Mantiene Límite Inferior (KI)
             model.constraint_16 = ConstraintList()
             for s in model.S:
                 if sum(model.DR[s, t] for t in model.T) == 0 and sum(model.DD[s, t] for t in model.T) == 0:
@@ -525,7 +478,7 @@ def ejecutar_instancias_coloracion(
                 else:
                     model.constraint_16.add(model.k[s] >= model.KI[s])
     
-            # Restricciones (17), (18) y (19)
+            # Restricciones (17 a 19)
             model.constraint_17 = ConstraintList()
             model.constraint_18 = ConstraintList()
             model.constraint_19 = ConstraintList()
@@ -535,7 +488,6 @@ def ejecutar_instancias_coloracion(
                         model.w[b, t] == sum(model.fr[s, b, t] + model.fc[s, b, t] + model.fd[s, b, t] + model.fe[s, b, t]
                                             for s in model.S)
                     )
-                for b in model.B:
                     model.constraint_18.add(model.p[t] >= model.w[b, t])
                     model.constraint_19.add(model.q[t] <= model.w[b, t])
     
@@ -544,14 +496,33 @@ def ejecutar_instancias_coloracion(
             for t in model.T:
                 model.constraint_20.add(expr=model.p[t] - model.q[t] <= model.r)
     
-            # * model.TEU[s]
-            # Restricción (21)
-            model.constraint_21 = ConstraintList()
-            for t in model.T:
-                for b in model.B:
-                    model.constraint_21.add(
-                        expr = sum(model.v[s, b, t] * model.R[s] for s in model.S) <= model.VSR[b]
-                    )
+            # Restricción (21) - Sintaxis Corregida
+            if es_pila:
+                model.constraint_reefer_plugs = ConstraintList()
+                model.constraint_reefer_20 = ConstraintList()
+                model.constraint_reefer_40 = ConstraintList()
+            
+                for t in model.T:
+                    for b in model.B:
+                        # Enchufes disponibles
+                        model.constraint_reefer_plugs.add(
+                            expr=model.g20[b, t] + model.g40[b, t] <= model.E[b]
+                        )
+                        # Reefer 20' caben en los enchufes configurados a 20'
+                        model.constraint_reefer_20.add(
+                            expr=sum(model.v[s, b, t] for s in S20R) <= model.ROWS[b] * model.g20[b, t]
+                        )
+                        # Reefer 40' caben en los enchufes configurados a 40'
+                        model.constraint_reefer_40.add(
+                            expr=sum(model.v[s, b, t] for s in S40R) <= model.ROWS[b] * model.g40[b, t]
+                        )
+            elif not es_pila:
+                model.constraint_21 = ConstraintList()
+                for t in model.T:
+                    for b in model.B:
+                        model.constraint_21.add(
+                            expr=sum(model.v[s, b, t] * model.R[s] for s in model.S) <= model.VSR[b]
+                        )
     
             # Función objetivo
             def objective_rule(model):
@@ -566,39 +537,96 @@ def ejecutar_instancias_coloracion(
             t_build1 = time.perf_counter()
             build_seconds = t_build1 - t_build0
             
+            # =========================================================================
+            # ANÁLISIS DE PARETO PARA EL PARÁMETRO "R" (OPCIONAL)
+            # =========================================================================
+            if ACTIVAR_PARETO:
+                solver_pareto = SolverFactory('gurobi')
+                
+                # Configuraciones para Pareto (más holgadas)
+                solver_pareto.options.update({
+                    'LogToConsole': 0,
+                    'MIPGap': 1e-4, 
+                    'FeasibilityTol': 1e-5,
+                    'OptimalityTol': 1e-8,
+                    'IntFeasTol': 1e-5,
+                    'TimeLimit': 600, 
+                    'MIPFocus': 0.2,
+                    'Heuristics': 0.2,
+                    'PumpPasses': 20,
+                })
+                
+                valores_R = [100, 200, 300, 400, 500, 600, 800, 1000]
+                resultados_pareto = []
+                
+                print(f"\n---> Iniciando Análisis de Pareto para la Semana {semana_actual}")
+                for r_val in valores_R:
+                    model.r = r_val 
+                    log_path_pareto = os.path.join(directorio_datos_semanal, f'gurobi_log_PARETO_{semana_actual}_R{r_val}.log')
+                    solver_pareto.options['LogFile'] = log_path_pareto
+            
+                    res_pareto = solver_pareto.solve(model, tee=False, load_solutions=True) 
+                    
+                    if _has_incumbent(res_pareto, model):
+                        distancia_pareto = value(model.objective)
+                        print(f"  [Pareto R={r_val}]: Distancia = {distancia_pareto}")
+                        resultados_pareto.append({
+                            'Semana': semana_actual,
+                            'R_Max_Desbalance': r_val,
+                            'Distancia_Total': distancia_pareto,
+                            'Status': str(res_pareto.solver.termination_condition)
+                        })
+                    else:
+                        print(f"  [Pareto R={r_val}]: ⛔ Sin solución factible.")
+                        resultados_pareto.append({
+                            'Semana': semana_actual,
+                            'R_Max_Desbalance': r_val,
+                            'Distancia_Total': None,
+                            'Status': str(res_pareto.solver.termination_condition)
+                        })
+
+                # Guardar resultados de Pareto
+                df_pareto = pd.DataFrame(resultados_pareto)
+                pareto_file = os.path.join(resultados_magdalena_base_path, semana_actual, f"Pareto_R_Distancia_{semana_actual}.xlsx")
+                df_pareto.to_excel(pareto_file, index=False)
+                print(f"---> Resumen de Pareto guardado en: {pareto_file}")
+
+            # =========================================================================
+            # CORRIDA FINAL / PRINCIPAL
+            # =========================================================================
+            print(f"\n---> Ejecutando optimización principal para la Semana {semana_actual} con R = {VALOR_BASE_R}")
+            
+            model.r = VALOR_BASE_R
             solver = SolverFactory('gurobi')
-            log_path = os.path.join(directorio_datos_semanal, f'gurobi_log_{semana_actual}.log')
+            log_path = os.path.join(directorio_datos_semanal, f'gurobi_log_{semana_actual}_FINAL.log')
+            
             solver.options.update({
                 'LogToConsole': 0,
                 'LogFile': log_path,
-                'MIPGap': 1e-3,
+                'MIPGap': 1e-5, 
                 'FeasibilityTol': 1e-5,
                 'OptimalityTol': 1e-8,
                 'IntFeasTol': 1e-5,
-                'TimeLimit': 2000, # 2 hora
-                'MIPFocus': 1,      # prioriza factibilidad
-                'Heuristics': 0.5,  # más heurística
-                'PumpPasses': 20,   # feasibility pump
-                'SolutionLimit': 20, # detener al encontrar la primera solución factible
+                'TimeLimit': 2000, 
+                'MIPFocus': 0.2,
+                'Heuristics': 0.2,
+                'PumpPasses': 20,
             })
-    
+            
             t0 = time.perf_counter()
             res = solver.solve(model, tee=True, load_solutions=True)
             t1 = time.perf_counter()
             solve_seconds = t1 - t0
             
-            # ====== NUEVAS MÉTRICAS paper-ready ======
+            # --- EVALUACIÓN DE ESTADO FINAL ---
             gurobi_version = _gurobi_version_safe()
-            
             stats_res = _extract_gurobi_stats_from_results(res)
             stats_log = _parse_gurobi_log_for_threads_gap_nodes(log_path)
             
             mip_gap = stats_res["mip_gap"] if stats_res["mip_gap"] is not None else stats_log["mip_gap"]
             node_count = stats_res["node_count"] if stats_res["node_count"] is not None else stats_log["node_count"]
             threads = stats_log["threads"]
-            
             tc = res.solver.termination_condition
-            
             
             if tc == TerminationCondition.infeasible:
                 logger.error("🚨 Infactible en %s: escribiendo LP + IIS…", semana_actual)
@@ -611,19 +639,15 @@ def ejecutar_instancias_coloracion(
                 iis_path_written, is_min = write_iis_gurobi_with_timelimit(
                     model,
                     iis_path,
-                    timelimit_s=60,      # << tu límite en segundos
-                    iis_method=None,      # o 0/1/2 si quieres probar
+                    timelimit_s=60,
+                    iis_method=None,
                     log_file=iis_log
                 )
-                
                 logger.error("IIS escrito en %s (IISMinimal=%s)", iis_path_written, int(is_min))
-                
-                
                 semanas_infactibles.append(semana_actual)
                 continue
             
             if not _has_incumbent(res, model):
-                # Aquí ya NO escribimos LP si hay solución adjunta: sólo guarda LP cuando de verdad no hay incumbente.
                 logger.error("⛔ %s terminó sin incumbente real. Guardo LP y sigo.", semana_actual)
                 results_dir_semana = os.path.join(resultados_magdalena_base_path, semana_actual)
                 lp_path = os.path.join(results_dir_semana, f"modelo_{semana_actual}_nolb.lp")
@@ -632,19 +656,17 @@ def ejecutar_instancias_coloracion(
             
             logger.info("✅ Semana %s con solución (tc=%s).", semana_actual, res.solver.termination_condition)
     
-            # Calcular distancia para exportación (expo)
+            # Calcular distancias para exportación
             distancia_expo = sum(
                 value(model.fc[s, b, t]) * value(model.LC[s, b])
                 for b in model.B for s in model.S for t in model.T
             )
             
-            # Calcular distancia para importación (impo)
             distancia_impo = sum(
                 value(model.fe[s, b, t]) * value(model.LE[b])
                 for b in model.B for s in model.S for t in model.T
             )
             
-            # Calcular distancias y movimientos
             distancia_expo_por_seg = {
                 s: sum(value(model.fc[s, b, t]) * value(model.LC[s, b]) for b in model.B for t in model.T)
                 for s in model.S
@@ -666,9 +688,9 @@ def ejecutar_instancias_coloracion(
             distancia_load_total = sum(distancia_expo_por_seg.values())
             distancia_dlvr_total = sum(distancia_impo_por_seg.values())
     
-            # Agregar al resumen de la semana actual
+            # Agregar al resumen
             resumen_semanal_actual.append({
-                'Semana': semana_actual, # Usar semana_actual
+                'Semana': semana_actual,
                 'Distancia Total': value(model.objective),
                 'Distancia LOAD': distancia_load_total,
                 'Distancia DLVR': distancia_dlvr_total,
@@ -676,10 +698,9 @@ def ejecutar_instancias_coloracion(
                 'Movimientos_LOAD': sum(movimientos_load_por_seg.values())
             })
     
-            # Agregar a resultados por segregación de la semana actual
             for s in model.S:
                 resultados_segregacion_actual.append({
-                    'Semana': semana_actual, # Usar semana_actual
+                    'Semana': semana_actual,
                     'Segregacion': segregacion_map[s],
                     'Distancia_Total': distancia_expo_por_seg[s] + distancia_impo_por_seg[s],
                     'Distancia_DLVR': distancia_impo_por_seg[s],
@@ -688,14 +709,13 @@ def ejecutar_instancias_coloracion(
                     'Movimientos_LOAD': movimientos_load_por_seg[s]
                 })
     
-            # Agregar al detalle de movimientos de la semana actual
             for s in model.S:
                 for b in model.B:
                     movimientos_dlvr = sum(value(model.fe[s, b, t]) for t in model.T)
                     movimientos_load = sum(value(model.fc[s, b, t]) for t in model.T)
                     if movimientos_dlvr > 0 or movimientos_load > 0:
                         detalle_movimientos_actual.append({
-                            'Semana': semana_actual, # Usar semana_actual
+                            'Semana': semana_actual,
                             'Segregacion': segregacion_map[s],
                             'Bloque': b,
                             'Movimientos DLVR': movimientos_dlvr,
@@ -704,7 +724,7 @@ def ejecutar_instancias_coloracion(
     
             print(f"Semana {semana_actual}: {value(model.objective)}, {distancia_load_total}, {distancia_dlvr_total}")
             
-            # Extraer resultados de las variables del modelo
+            # --- EXTRACCIÓN DE EXCEL FINAL ---
             fr_values = [(s, b, t, model.fr[s, b, t].value) for s in model.S for b in model.B for t in model.T]
             df_fr = pd.DataFrame(fr_values, columns=["Segregación", "Bloque", "Periodo", "Recibir"])
     
@@ -754,18 +774,17 @@ def ejecutar_instancias_coloracion(
                     model.v[s, b, t].value * model.TEU[s], bloque_id_map[b], seg_id_map[s], model.VS[b])
                    for s in model.S for b in model.B for t in model.T]
             df_gen = pd.DataFrame(gen, columns=["Segregación", "Bloque", "Periodo", "Recepción", "Carga",
-                                                     "Descarga", "Entrega", "Asignado", "Volumen (TEUs)",
-                                                     "Bahías Ocupadas", "BloqueID", "SegregaciónID", "Bahías"])
+                                                "Descarga", "Entrega", "Asignado", "Volumen (TEUs)",
+                                                "Bahías Ocupadas", "BloqueID", "SegregaciónID", "Bahías"])
     
-            # Calcular el incremento de bahías ocupadas
             def calcular_incremento_bahias(group):
                 group = group.sort_values('Periodo')
                 group['Incremento Bahías'] = group['Bahías Ocupadas'].diff().fillna(group['Bahías Ocupadas'])
                 group['Incremento Bahías'] = group['Incremento Bahías'].apply(lambda x: max(0, x))
                 return group
     
-            import warnings # Ya importado al inicio
-            warnings.filterwarnings("ignore", category=DeprecationWarning) # Ya configurado al inicio
+            import warnings 
+            warnings.filterwarnings("ignore", category=DeprecationWarning) 
     
             df_gen = df_gen.groupby(['Segregación', 'Bloque']).apply(calcular_incremento_bahias).reset_index(drop=True)
     
@@ -776,22 +795,20 @@ def ejecutar_instancias_coloracion(
                    for _, row in df_gen.iterrows()]
     
             df_gen = pd.DataFrame(gen, columns=["Segregación", "Bloque", "Periodo", "Recepción", "Carga",
-                                                     "Descarga", "Entrega", "Asignado", "Volumen (TEUs)",
-                                                     "Bahías Ocupadas", "BloqueID", "SegregaciónID", "Bahías",
-                                                     "Incremento Bahías"])
+                                                "Descarga", "Entrega", "Asignado", "Volumen (TEUs)",
+                                                "Bahías Ocupadas", "BloqueID", "SegregaciónID", "Bahías",
+                                                "Incremento Bahías"])
     
             cap_bloque = [
                 (s, b, t, model.C[b] * model.VS[b] * model.OS.value,
                  model.i[s, b, t].value * model.TEU[s],
-                 sum(model.C[b_inner] * model.VS[b_inner] * model.OS.value for b_inner in model.B), # Corregido para sumar todos los bloques
+                 sum(model.C[b_inner] * model.VS[b_inner] * model.OS.value for b_inner in model.B), 
                  bloque_id_map[b], seg_id_map[s], model.VS[b])
                 for s in model.S for b in model.B for t in model.T
             ]
             df_c_b = pd.DataFrame(cap_bloque, columns=["Segregación", "Bloque", "Periodo", "Capacidad Bloque",
-                                                     "Volumen bloques (TEUs)", "Cap Patio", "BloqueID", "SegregaciónID", "Bahías"])
+                                                       "Volumen bloques (TEUs)", "Cap Patio", "BloqueID", "SegregaciónID", "Bahías"])
     
-    
-            # Calcular la cantidad de contenedores por turno y por bloque
             datos_turno_bloque = []
             for t in model.T:
                 for b in model.B:
@@ -826,14 +843,12 @@ def ejecutar_instancias_coloracion(
     
         except Exception as e:
             print(f"Error procesando semana {semana_actual}: Error - {str(e)}")
-            continue # Continuar con la siguiente semana en caso de error
+            continue 
     
-        # Crear DataFrames a partir de las listas de la semana actual
         df_resumen_semanal_actual_df = pd.DataFrame(resumen_semanal_actual)
         df_resultados_segregacion_actual_df = pd.DataFrame(resultados_segregacion_actual)
         df_detalle_movimientos_actual_df = pd.DataFrame(detalle_movimientos_actual)
     
-        # Guardar resultados de resumen en Excel para la semana actual
         try:
             with pd.ExcelWriter(resultado_distancias_file_semana, engine='openpyxl') as writer:
                 df_resumen_semanal_actual_df.to_excel(writer, sheet_name='Resumen Semanal', index=False)
@@ -850,8 +865,6 @@ def ejecutar_instancias_coloracion(
             "fase": "final",
             "resultado_xlsx": resultado_file_semana,
             "resultado_distancias": resultado_distancias_file_semana,
-        
-            # NUEVAS PAPER-METRICS
             "build_seconds": build_seconds,
             "gurobi_version": gurobi_version,
             "threads": threads,
@@ -862,7 +875,6 @@ def ejecutar_instancias_coloracion(
         obj_val = objective_value_safe(model, obj_name="objective")
         row = telemetry_pack(model, meta=meta, solve_elapsed=solve_seconds, res=res, objective=obj_val)
         
-        # Por si telemetry_pack no expande meta a columnas, lo reforzamos:
         row["build_seconds"] = build_seconds
         row["gurobi_version"] = gurobi_version
         row["threads"] = threads
@@ -871,15 +883,11 @@ def ejecutar_instancias_coloracion(
         
         append_metrics_row(metrics_csv, row)
         
-
-        
-    
     print("\nProceso completado para todas las semanas.")
     
     semanas_filtradas = [s for s in semanas_a_procesar 
                          if s not in semanas_infactibles]
     
-    # Imprimimos en el formato literal Python que pedías
     print("\nsemanas_a_procesar = [")
     for s in semanas_filtradas:
         print(f'    "{s}",')

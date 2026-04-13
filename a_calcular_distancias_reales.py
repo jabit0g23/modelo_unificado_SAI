@@ -8,10 +8,10 @@ from collections import defaultdict
 # CONFIG
 # =========================
 
-ROOT_SEMANAS = r"resultados_generados_pila_criterio_ii_test/instancias_magdalena"
-OUTPUT = r"resultados_generados_pila_criterio_ii_test/metrics"
+ROOT_SEMANAS = r"resultados_generados_pila_criterio_iii/instancias_magdalena"
+OUTPUT = r"resultados_generados_pila_criterio_iii_test_año_nofiltro/metrics"
 
-ROOT_RESULTADOS_MAGDALENA = r"resultados_generados_pila_criterio_ii_test/resultados_magdalena"
+ROOT_RESULTADOS_MAGDALENA = r"resultados_generados_pila_criterio_iii/resultados_magdalena"
 DIST_MODELO_FILENAME_FMT = "Distancias_Modelo_{semana}_68.xlsx"
 DIST_MODELO_GLOB = "Distancias_Modelo_*_68.xlsx"
 DIST_MODELO_SHEET = None
@@ -713,22 +713,22 @@ def main():
             _write_sheet_no_grouping(writer, df_resumen, "Resumen Semanal")
         if not df_resumen_modelo_68.empty:
             _write_sheet_no_grouping(writer, df_resumen_modelo_68, "Resumen Modelo 68")
-        if not df_resultados.empty:
-            _write_sheet_no_grouping(writer, df_resultados, "Resultados por Segregación")
-        if not df_detalle.empty:
-            _write_sheet_no_grouping(writer, df_detalle, "Detalle de Movimientos")
-        if not df_missing.empty:
-            _write_sheet_no_grouping(writer, df_missing, "Pares sin distancia")
-        if not df_excluidos.empty:
-            _write_sheet_no_grouping(writer, df_excluidos, "Excluidos Distancias")
-        if not df_resumen_excl.empty:
-            _write_sheet_no_grouping(writer, df_resumen_excl, "Resumen Excluidos")
-        if not df_seg_fuera_inst.empty:
-            _write_sheet_no_grouping(writer, df_seg_fuera_inst, "Seg_Fuera_Instancia")
-        if not df_seg_fuera_filtro.empty:
-            _write_sheet_no_grouping(writer, df_seg_fuera_filtro, "Seg_Fuera_Filtro")
-        if not df_recon.empty:
-            _write_sheet_no_grouping(writer, df_recon, "Reconciliacion")
+        # if not df_resultados.empty:
+        #     _write_sheet_no_grouping(writer, df_resultados, "Resultados por Segregación")
+        # if not df_detalle.empty:
+        #     _write_sheet_no_grouping(writer, df_detalle, "Detalle de Movimientos")
+        # if not df_missing.empty:
+        #     _write_sheet_no_grouping(writer, df_missing, "Pares sin distancia")
+        # if not df_excluidos.empty:
+        #     _write_sheet_no_grouping(writer, df_excluidos, "Excluidos Distancias")
+        # if not df_resumen_excl.empty:
+        #     _write_sheet_no_grouping(writer, df_resumen_excl, "Resumen Excluidos")
+        # if not df_seg_fuera_inst.empty:
+        #     _write_sheet_no_grouping(writer, df_seg_fuera_inst, "Seg_Fuera_Instancia")
+        # if not df_seg_fuera_filtro.empty:
+        #     _write_sheet_no_grouping(writer, df_seg_fuera_filtro, "Seg_Fuera_Filtro")
+        # if not df_recon.empty:
+        #     _write_sheet_no_grouping(writer, df_recon, "Reconciliacion")
 
     print(f"\nListo. Guardado en: {OUT_XLSX}")
 

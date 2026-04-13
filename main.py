@@ -13,8 +13,8 @@ from modelo_gruas_maxmin import ejecutar_instancias_gruas_maxmin
 
 # (A) Semanas
 ANIO = 2022
-
-SEMANAS =  ["2022-03-07", "2022-03-14", "2022-03-21", "2022-04-11", "2022-04-18", "2022-04-25", "2022-06-20", "2022-06-27", "2022-12-12"]
+# "2022-02-07", "2022-02-21", "2022-02-28", "2022-03-14"
+SEMANAS =  ["2022-01-03"]
 
 USAR_RANGO = False
 ISO_WEEK_INI = 41
@@ -22,7 +22,8 @@ ISO_WEEK_FIN = 52
 
 # (B) Parámetros generales
 PARTICIPACION = 0
-CRITERIO = "criterio_ii" # "criterio_ii" / "criterio_iii"
+AUX_KI = 280
+CRITERIO = "criterio_iii" # "criterio_ii" / "criterio_iii"
 OBJETIVO_GRUAS = "maxmin"  # "maxmin" o "minmax"
 
 TURNOS = list(range(1, 22))  # 1..21
@@ -30,7 +31,7 @@ CAP_MODE = "pila"   # cambiar entre "pila" y "bahia"
 
 # (C) Switches de pasos 
 EJECUTAR = {
-    "instancias_coloracion": True,
+    "instancias_coloracion": False,
     "modelo_coloracion":     True,
     "guardar_csv":           False,
     "instancias_gruas":      False,
@@ -40,7 +41,7 @@ EJECUTAR = {
 # (D) Rutas
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 ESTATICOS  = os.path.join(BASE_DIR, "archivos_estaticos")
-RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_test")
+RESULTADOS = os.path.join(BASE_DIR, f"resultados_generados_{CAP_MODE}_{CRITERIO}_asd")
 BASE_INST  = os.path.join(RESULTADOS, "instancias_camila")
 BASE_RES   = os.path.join(RESULTADOS, "resultados_camila")
 
@@ -91,7 +92,7 @@ def main():
         generar_instancias_coloracion(
             semanas, CRITERIO, anio_para_instancias,
             PARTICIPACION, RESULTADOS, ESTATICOS,
-            cap_mode=CAP_MODE,  # ← pasamos el modo aquí
+            cap_mode=CAP_MODE, aux_ki=AUX_KI
         )
     else:
         print("\n[1/5] Saltando generación de instancias de coloración.")

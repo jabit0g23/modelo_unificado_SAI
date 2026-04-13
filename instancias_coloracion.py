@@ -47,7 +47,7 @@ def _resolver_carpeta_estaticos(semana: str, anio: int, criterio: str, estaticos
     return None
 
 
-def _process_semana(semana, criterio, anio, participacion, resultados_dir, estaticos_dir, todas_semanas, *, cap_mode: str):
+def _process_semana(semana, criterio, anio, participacion, resultados_dir, estaticos_dir, todas_semanas, *, cap_mode: str, aux_ki):
     print(f"\n(Generar instancia magdalena) ===== PROCESANDO SEMANA: {semana}  [cap_mode={cap_mode}] =====")
 
     # 2) Análisis de flujos (genera analisis_flujos_w{semana}_0.xlsx)
@@ -78,13 +78,13 @@ def _process_semana(semana, criterio, anio, participacion, resultados_dir, estat
     # 4) Generación de instancias (pasando cap_mode = 'bahia' | 'tier')
     print("Paso 4: Generando instancias…")
     try:
-        generar_instancias(semana, resultados_dir=resultados_dir, estaticos_dir=estaticos_dir, participacion_C=participacion, cap_mode=cap_mode)
+        generar_instancias(semana, resultados_dir=resultados_dir, estaticos_dir=estaticos_dir, participacion_C=participacion, cap_mode=cap_mode, aux_ki=aux_ki)
         print(f"Generación de instancias completada (cap_mode={cap_mode}).")
     except Exception as e:
         print(f"ADVERTENCIA: Falló la generación de instancias para {semana}: {e}. Continúo con la siguiente.")
 
 
-def generar_instancias_coloracion(semanas, criterio, anio, participacion, resultados_dir, estaticos_dir, *, cap_mode: str = "bahia"):
+def generar_instancias_coloracion(semanas, criterio, anio, participacion, resultados_dir, estaticos_dir, *, cap_mode = None, aux_ki = None):
     """
     cap_mode: 'bahia' o 'tier'
     """
@@ -104,7 +104,7 @@ def generar_instancias_coloracion(semanas, criterio, anio, participacion, result
     for sem in semanas:
         _process_semana(
             sem, criterio, anio, participacion, resultados_dir, estaticos_dir, semanas,
-            cap_mode=cap_mode
+            cap_mode=cap_mode, aux_ki=aux_ki
         )
 
     print("\n(Generar instancia magdalena) ===== PROCESO COMPLETADO PARA TODAS LAS SEMANAS =====")

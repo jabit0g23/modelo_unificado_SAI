@@ -6,7 +6,7 @@ import numpy as np
 # =========================================================
 # CONFIG
 # =========================================================
-CSV_PATH = Path("resultados_generados_pila_criterio_ii_test/metrics/metrics_magdalena.csv")
+CSV_PATH = Path("resultados_generados_pila_criterio_iii_test_año_nofiltro/metrics/metrics_magdalena.csv")
 
 # Datos de hardware/software que NO vienen completos en el CSV
 SYSTEM_INFO = {
