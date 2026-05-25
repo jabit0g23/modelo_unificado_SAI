@@ -5,17 +5,29 @@ import math
 import os
 from pathlib import Path
 
+from .. import config as _cfg
+
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
+def generar_instancias(
+    semana,
+    resultados_dir,
+    estaticos_dir,
+    participacion_C,
+    cap_mode="pila",
+    cbs_mode=None,
+    aux_ki: int = 140,
+    umbral_agrupacion: int = 0,
+):
     
     """
     Genera archivos de instancia (Excel) para el modelo Magdalena con granularidad HORARIA.
     """
 
     # ───────────── Parámetros base y estáticos ─────────────
-    # ### CAMBIO ###: Horizonte de tiempo 1 a 168 (horas)
-    T = list(range(1, 169))
+    horas = int(_cfg.horas_horizonte())
+    n_turnos = max(1, int(math.ceil(horas / 8)))
+    T = list(range(1, horas + 1))
     
     SERVICIOS_REGULARES = ['EU', 'MSC', 'MK', 'HAP', 'ACSA', 'CMA']
 
@@ -72,6 +84,12 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
     df_flujos_all_sbt = _leer_hoja(ruta_analisis, 'FlujosAll_sbt_P')
     df_flujos_168h = _leer_hoja(ruta_analisis, 'Flujos_168h')
 
+    # Fix: columnas de tiempo siempre numéricas
+    if 'shift' in df_flujos_all_sbt.columns:
+        df_flujos_all_sbt['shift'] = pd.to_numeric(df_flujos_all_sbt['shift'], errors='coerce').fillna(0).astype(int)
+    if 'T' in df_flujos_168h.columns:
+        df_flujos_168h['T'] = pd.to_numeric(df_flujos_168h['T'], errors='coerce').fillna(0).astype(int)
+
     ruta_evolucion = os.path.join(ruta_base_semana, f"evolucion_turnos_w{semana}.xlsx")
     if Path(ruta_evolucion).is_file():
         df_evolucion_sb = pd.read_excel(ruta_evolucion, sheet_name='Bloques_Seg_Volumen')
@@ -80,22 +98,64 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
 
     df_distancias = pd.read_excel(os.path.join(estaticos_dir, "Distancias_GranPatio.xlsx"), sheet_name='Distancias')
 
+    # ─── Consolidación de segregaciones impo: eliminar campo "visita" ───
+    # impo-{tipo}-{tamaño}-{visita}-{DIRECTO|INDIRECTO} → impo-{tipo}-{tamaño}-{DIRECTO|INDIRECTO}
+    def _consolidar_impo(name):
+        if not isinstance(name, str) or not name.startswith('impo-'):
+            return name
+        parts = name.split('-')
+        if len(parts) < 5:
+            return name
+        return '-'.join(parts[:3] + parts[4:])
+
+    df_flujos_all_sb['criterio']    = df_flujos_all_sb['criterio'].apply(_consolidar_impo)
+    df_flujos_all_sbt['criterio']   = df_flujos_all_sbt['criterio'].apply(_consolidar_impo)
+    df_flujos_168h['Segregacion']   = df_flujos_168h['Segregacion'].apply(_consolidar_impo)
+
+    # Reagrupar duplicados tras la consolidación
+    flow_cols_168 = [c for c in ('RECV', 'LOAD', 'DSCH', 'DLVR') if c in df_flujos_168h.columns]
+    df_flujos_168h = df_flujos_168h.groupby(['Segregacion', 'T'], as_index=False)[flow_cols_168].sum()
+
     # ───────────── Utilidades de ajuste y heurísticas ─────────────
     def calcular_ajuste_necesario(I0, flujos, tipo):
-        # ### CAMBIO ###: Detectar columna temporal (T o period)
-        col_t = 'T' if 'T' in flujos.columns else 'period' if 'period' in flujos.columns else 'shift'
-        f = flujos.sort_values(col_t).fillna(0)
-        
-        if tipo == 'expo':
-            delta = f['RECV'] - f['LOAD']
-        elif tipo == 'impo':
-            delta = f['DSCH'] - f['DLVR']
+        """Replica el ajuste del pipeline secuencial sobre el horizonte configurado."""
+        f = flujos.copy()
+        if f.empty:
+            return 0
+
+        if 'shift' in f.columns:
+            f['shift'] = pd.to_numeric(f['shift'], errors='coerce').fillna(0).astype(int)
         else:
-            delta = (f['RECV'] + f['DSCH']) - (f['LOAD'] + f['DLVR'])
-        
-        inv, inv_min = I0, I0
-        for d in delta:
-            inv += d
+            col_t = 'T' if 'T' in f.columns else 'period' if 'period' in f.columns else None
+            if col_t is None:
+                return 0
+            f[col_t] = pd.to_numeric(f[col_t], errors='coerce').fillna(0).astype(int)
+            f = f[f[col_t].between(1, horas)]
+            f['shift'] = ((f[col_t] - 1) // 8) + 1
+
+        f = f[f['shift'].between(1, n_turnos)]
+        cols = [c for c in ['RECV', 'LOAD', 'DSCH', 'DLVR'] if c in f.columns]
+        if not cols:
+            return 0
+
+        g = (
+            f.groupby('shift')[cols]
+            .sum()
+            .reindex(list(range(1, n_turnos + 1)), fill_value=0)
+            .sort_index()
+        )
+
+        if tipo == 'expo':
+            delta = g.get('RECV', 0) - g.get('LOAD', 0)
+        elif tipo == 'impo':
+            delta = g.get('DSCH', 0) - g.get('DLVR', 0)
+        else:
+            delta = (g.get('RECV', 0) + g.get('DSCH', 0)) - (g.get('LOAD', 0) + g.get('DLVR', 0))
+
+        inv = int(I0)
+        inv_min = inv
+        for d in delta.values:
+            inv += int(d)
             inv_min = min(inv_min, inv)
         return max(0, -inv_min)
 
@@ -255,7 +315,7 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
             total_sum = group[column_name].sum()
             return patio_sum / total_sum if total_sum != 0 else 0
         patio_values = df[df['criterio'].isin(df_filtered.index)].groupby('criterio').apply(calc_patio_ratio)
-        return patio_values.index.tolist()
+        return patio_values[patio_values >= (participacion_C / 100)].index.tolist()
 
     def analyze_dlvr(df, min_value=0):
         return analyze_column(df, 'DLVR', 'ime_fm', min_value)
@@ -350,6 +410,65 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
 
     segregaciones_finales = sorted(candidatas, key=lambda s: (0 if 'reefer' in s.lower() else 1, 0 if '-40-' in s else 1, -presion[s], s))
 
+    # ───────── Agrupación de segregaciones de bajo volumen (RUMA) ─────────
+    if umbral_agrupacion > 0:
+        vol_sbt = df_flujos_all_sbt.groupby('criterio')[['RECV', 'LOAD', 'DSCH', 'DLVR']].sum()
+        vol_sbt['total'] = vol_sbt.sum(axis=1)
+        inv_tot_s = (
+            inventario_inicial_por_bloque.set_index('Segregacion')[B].sum(axis=1)
+            if len(inventario_inicial_por_bloque) > 0 else pd.Series(dtype=float)
+        )
+
+        def _prefix3(name):
+            parts = str(name).split('-')
+            return '-'.join(parts[:3]) if len(parts) >= 3 else name
+
+        grandes_segs, grupos_ruma = [], {}
+        for seg in segregaciones_finales:
+            flujo = int(vol_sbt.loc[seg, 'total']) if seg in vol_sbt.index else 0
+            inv = int(inv_tot_s.get(seg, 0))
+            if flujo + inv <= umbral_agrupacion:
+                grupos_ruma.setdefault(_prefix3(seg), []).append(seg)
+            else:
+                grandes_segs.append(seg)
+
+        if grupos_ruma:
+            nuevas_ruma = []
+            for prefix, segs_g in sorted(grupos_ruma.items()):
+                nombre_agg = f"{prefix}-RUMA"
+                nuevas_ruma.append(nombre_agg)
+
+                mask_sbt = df_flujos_all_sbt['criterio'].isin(segs_g)
+                flujos_agg = (
+                    df_flujos_all_sbt[mask_sbt]
+                    .groupby('shift')[['RECV', 'LOAD', 'DSCH', 'DLVR']]
+                    .sum().reset_index()
+                )
+                flujos_agg['criterio'] = nombre_agg
+                df_flujos_all_sbt = pd.concat([df_flujos_all_sbt[~mask_sbt], flujos_agg], ignore_index=True)
+
+                mask_h = df_flujos_168h['Segregacion'].isin(segs_g)
+                if mask_h.any():
+                    h_agg = (
+                        df_flujos_168h[mask_h]
+                        .groupby('T')[['RECV', 'LOAD', 'DSCH', 'DLVR']]
+                        .sum().reset_index()
+                    )
+                    h_agg['Segregacion'] = nombre_agg
+                    df_flujos_168h = pd.concat([df_flujos_168h[~mask_h], h_agg], ignore_index=True)
+
+                mask_inv = inventario_inicial_por_bloque['Segregacion'].isin(segs_g)
+                if mask_inv.any():
+                    inv_agg = inventario_inicial_por_bloque[mask_inv][B].sum()
+                    inv_row = pd.DataFrame([{'Segregacion': nombre_agg, **inv_agg.to_dict()}])
+                    inventario_inicial_por_bloque = pd.concat(
+                        [inventario_inicial_por_bloque[~mask_inv], inv_row], ignore_index=True
+                    )
+
+            nuevas_ruma_sorted = sorted(nuevas_ruma, key=lambda s: (0 if 'reefer' in s else 1, 0 if '-40-' in s else 1, s))
+            segregaciones_finales = grandes_segs + nuevas_ruma_sorted
+            print(f"  [RUMA] umbral={umbral_agrupacion}: {len(grandes_segs) + sum(len(v) for v in grupos_ruma.values())} → {len(segregaciones_finales)} segs ({len(grupos_ruma)} grupos RUMA)")
+
     # ───────── Reparto final de I0 por bloques ─────────
     inventario_ajustado = {}
     ajustes = {}
@@ -370,11 +489,37 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
         es_40 = '-40-' in segregacion
 
         if cap_mode == "bahia":
-            inv_aj, bahias_ocupadas_global, bahias_reefer_ocupadas_global = redistribuir_bahia(inv_total, es_reefer, es_40, bahias_ocupadas_global, bahias_reefer_ocupadas_global)
+            bahias_oc_tmp = bahias_ocupadas_global.copy()
+            bahias_ree_tmp = bahias_reefer_ocupadas_global.copy()
+            inv_aj, bahias_oc_tmp, bahias_ree_tmp = redistribuir_bahia(inv_total, es_reefer, es_40, bahias_oc_tmp, bahias_ree_tmp)
+            restante = inv_total - int(inv_aj.sum())
         elif cap_mode == "pila":
-            inv_aj, pilas_ocupadas_global, pilas_reefer_ocupadas_global, pares_ocupados_global, pares_reefer_ocupados_global = redistribuir_pila(inv_total, es_reefer, es_40, pilas_ocupadas_global, pilas_reefer_ocupadas_global, pares_ocupados_global, pares_reefer_ocupados_global)
+            pilas_oc_tmp = pilas_ocupadas_global.copy()
+            pilas_ree_tmp = pilas_reefer_ocupadas_global.copy()
+            pares_oc_tmp = pares_ocupados_global.copy()
+            pares_ree_tmp = pares_reefer_ocupados_global.copy()
+            inv_aj, pilas_oc_tmp, pilas_ree_tmp, pares_oc_tmp, pares_ree_tmp = redistribuir_pila(
+                inv_total, es_reefer, es_40, pilas_oc_tmp, pilas_ree_tmp, pares_oc_tmp, pares_ree_tmp
+            )
+            restante = inv_total - int(inv_aj.sum())
         else:
             raise ValueError("cap_mode debe ser 'bahia' o 'pila'")
+
+        if restante > 0:
+            raise RuntimeError(
+                f"[ERROR I0] Semana {semana}: no se pudo asignar inventario completo de '{segregacion}'.\n"
+                f"inv_total={inv_total}, asignado={int(inv_aj.sum())}, restante={restante}. cap_mode={cap_mode}."
+            )
+
+        if cap_mode == "bahia":
+            bahias_ocupadas_global = bahias_oc_tmp
+            bahias_reefer_ocupadas_global = bahias_ree_tmp
+        else:
+            pilas_ocupadas_global = pilas_oc_tmp
+            pilas_reefer_ocupadas_global = pilas_ree_tmp
+            pares_ocupados_global = pares_oc_tmp
+            pares_reefer_ocupados_global = pares_ree_tmp
+
         inventario_ajustado[segregacion] = inv_aj
         ajustes[segregacion] = ajuste_nec
 
@@ -464,8 +609,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
     df_B_I = pd.DataFrame({"B_I": B})
 
     # 2) Conjuntos de grúas
-    N_RTG = 14
-    N_RS  = 11
+    N_RTG = 7
+    N_RS  = 6
 
     G_RTG = [f"rtg{i}" for i in range(1, N_RTG + 1)]
     G_RS  = [f"rs{i}"  for i in range(1, N_RS + 1)]
@@ -476,8 +621,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
     df_GRS = pd.DataFrame({"GRS": G_RS})
 
     # 3) Productividades por tipo (movimientos/hora)
-    MU_RTG = 30
-    MU_RS  = 20
+    MU_RTG = 15
+    MU_RS  = 10
     df_PROD = pd.DataFrame(
         [
             {"Tipo": "RTG", "Prod": MU_RTG},
@@ -504,20 +649,119 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
     })
 
     # 6) C_bs: capacidad máxima de contenedores por (b, s)
-    # Definimos una cota simple:
+    # "global" replica la cota histórica y muy laxa:
     #   C_bs = VS_b * C_b
-    # donde VS_b está en df_VSb y C_b en df_Cb
+    # "i0_bays" cierra el soporte espacial a los bloques efectivamente
+    # abiertos por la redistribución inicial, con un buffer pequeño por bloque.
+    # Los bloques inactivos solo pueden abrirse localmente alrededor de
+    # bloques activos, o en unos pocos bloques semilla si la segregación
+    # parte con I0 completamente nulo.
     cap_b = df_Cb.set_index("B")["C"].to_dict()
     vs_b  = df_VSb.set_index("B")["VS"].to_dict()
+    cbs_mode = (cbs_mode or getattr(_cfg, "CBS_MODE", "global")).strip().lower()
+    extra_slots = max(0, int(getattr(_cfg, "CBS_EXTRA_SLOTS", 1)))
+    inactive_slots = max(0, int(getattr(_cfg, "CBS_INACTIVE_SLOTS", 0)))
+    inactive_radius = max(0, int(getattr(_cfg, "CBS_INACTIVE_RADIUS", 1)))
+    zero_i0_seed_blocks = max(1, int(getattr(_cfg, "CBS_ZERO_I0_SEED_BLOCKS", max(1, inactive_slots + 1))))
+
+    def _block_family(block):
+        return str(block)[0]
+
+    def _block_number(block):
+        try:
+            return int(str(block)[1:])
+        except Exception:
+            return None
+
+    gate_distance_by_block = {}
+    for b in B:
+        dist = df_distancias[(df_distancias['ime_fm'] == b) & (df_distancias['ime_to'] == 'GATE')]['Distancia[m]'].values
+        gate_distance_by_block[b] = int(dist[0]) if len(dist) > 0 else 10**9
+
+    load_distance_by_pair = {}
+    for site in ['Y-SAI-1', 'Y-SAI-2']:
+        tmp = df_distancias[(df_distancias['ime_fm'].isin(B)) & (df_distancias['ime_to'] == site)]
+        for _, row in tmp.iterrows():
+            load_distance_by_pair[(row['ime_fm'], site)] = int(row['Distancia[m]'])
+
+    sitios_carga_seed = (
+        df_flujos_all_sbt[df_flujos_all_sbt['LOAD'] > 0]
+        .groupby('criterio')['ime_to']
+        .first()
+        .to_dict()
+    )
 
     C_bs_rows = []
     for _, srow in df_S.iterrows():
         s_id = srow["S"]
+        seg = srow["Segregacion"]
+        i0_seg = inventario_ajustado[seg]
+        is_reefer = 'reefer' in str(seg).lower()
+        active_blocks = [B[j] for j, val in enumerate(i0_seg) if int(val) > 0]
+        active_block_set = set(active_blocks)
+
+        local_inactive_blocks = set()
+        if inactive_slots > 0 and active_blocks:
+            for b_act in active_blocks:
+                fam_act = _block_family(b_act)
+                num_act = _block_number(b_act)
+                if num_act is None:
+                    continue
+                for b_cand in B:
+                    if b_cand in active_block_set:
+                        continue
+                    if _block_family(b_cand) != fam_act:
+                        continue
+                    num_cand = _block_number(b_cand)
+                    if num_cand is None:
+                        continue
+                    if abs(num_cand - num_act) <= inactive_radius:
+                        if (not is_reefer) or (BAHIAS_REEFER_BLOQUE.get(b_cand, 0) > 0):
+                            local_inactive_blocks.add(b_cand)
+
+        zero_i0_seed_set = set()
+        if inactive_slots > 0 and not active_blocks:
+            eligible_blocks = [b for b in B if (not is_reefer) or (BAHIAS_REEFER_BLOQUE.get(b, 0) > 0)]
+            if seg.startswith('expo'):
+                sitio = sitios_carga_seed.get(seg)
+                if sitio in ['Y-SAI-1', 'Y-SAI-2']:
+                    ranked_blocks = sorted(
+                        eligible_blocks,
+                        key=lambda b: (
+                            load_distance_by_pair.get((b, sitio), gate_distance_by_block[b]),
+                            gate_distance_by_block[b],
+                            B.index(b),
+                        ),
+                    )
+                else:
+                    ranked_blocks = sorted(eligible_blocks, key=lambda b: (gate_distance_by_block[b], B.index(b)))
+            else:
+                ranked_blocks = sorted(eligible_blocks, key=lambda b: (gate_distance_by_block[b], B.index(b)))
+            zero_i0_seed_set = set(ranked_blocks[:zero_i0_seed_blocks])
+
         for b_id in B:
+            c_global = int(vs_b[b_id] * cap_b[b_id])
+            if cbs_mode == "global":
+                cbs_val = c_global
+            elif cbs_mode == "i0_bays":
+                idx_b = B.index(b_id)
+                i0_sb = int(i0_seg[idx_b])
+                if i0_sb <= 0:
+                    allow_inactive = False
+                    if active_blocks:
+                        allow_inactive = b_id in local_inactive_blocks
+                    else:
+                        allow_inactive = b_id in zero_i0_seed_set
+                    cbs_val = min(c_global, int(inactive_slots * cap_b[b_id])) if allow_inactive else 0
+                else:
+                    slots_i0 = int(math.ceil(i0_sb / max(1, cap_b[b_id])))
+                    cbs_val = min(c_global, int((slots_i0 + extra_slots) * cap_b[b_id]))
+            else:
+                raise ValueError(f"CBS_MODE desconocido: {cbs_mode}")
             C_bs_rows.append({
                 "B": b_id,
                 "S": s_id,
-                "Cbs": int(vs_b[b_id] * cap_b[b_id])
+                "Cbs": cbs_val
             })
     df_Cbs = pd.DataFrame(C_bs_rows)
 
@@ -561,14 +805,34 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
 
     
 
+    # ───────── Auditoría de factibilidad por prefijo ─────────
+    def audit_feasibility(df_i0_loc, d_params_loc, df_S_loc, T_loc):
+        i0_tot = df_i0_loc.groupby('S')['I0'].sum().to_dict()
+        g = (
+            d_params_loc.groupby(['S', 'T'])[['DR', 'DD', 'DC', 'DE']]
+            .sum()
+            .reindex(pd.MultiIndex.from_product([df_S_loc['S'].tolist(), T_loc], names=['S', 'T']), fill_value=0)
+            .reset_index()
+        )
+        bad = []
+        for s in df_S_loc['S']:
+            inv = int(i0_tot.get(s, 0))
+            inv_min = inv
+            for _, row in g[g['S'] == s].sort_values('T').iterrows():
+                inv += int(row['DR'] + row['DD'] - row['DC'] - row['DE'])
+                inv_min = min(inv_min, inv)
+            if inv_min < 0:
+                bad.append((s, inv_min, int(i0_tot.get(s, 0))))
+        return bad
+
     # ───────── Parámetros K ─────────
-    # KI se calcula sobre el flujo TOTAL, así que no cambia
     def calcular_ki(flujo):
-        if flujo <= 140:   return 1
-        elif flujo <= 280: return 2
-        elif flujo <= 420: return 3
-        elif flujo <= 595: return 4
-        else:              return 5
+        if flujo <= aux_ki:       return 1
+        elif flujo <= 2 * aux_ki: return 2
+        elif flujo <= 3 * aux_ki: return 3
+        elif flujo <= 4 * aux_ki: return 4
+        elif flujo <= 5 * aux_ki: return 5
+        else:                     return 6
 
     df_KS = pd.DataFrame({'S': df_S['S'], 'Segregacion': df_S['Segregacion'], 'KS': [9] * len(df_S)})
     df_KI = pd.DataFrame({'S': df_S['S'], 'Segregacion': df_S['Segregacion'], 'KI': [1] * len(df_S)})
@@ -580,6 +844,15 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
         'Segregacion': df_S['Segregacion'],
         'KI': [int(flujos_por_seg.get('KI', {}).get(seg, 1)) for seg in df_S['Segregacion']]
     })
+
+    # ───────── Auditoría de factibilidad ─────────
+    bad = audit_feasibility(df_i0, d_params, df_S, T)
+    if bad:
+        sample = bad[:20]
+        msg = '\n'.join([f'  {s}: inv_min={im}, I0={i0}' for (s, im, i0) in sample])
+        raise RuntimeError(
+            f'Instancia infactible por prefijo (inventario negativo en algún periodo):\n{msg}'
+        )
 
     # ───────── Distancias y banderas ─────────
     df_dist_carga = df_distancias[(df_distancias['ime_fm'].isin(B)) & (df_distancias['ime_to'].isin(['Y-SAI-1','Y-SAI-2']))]
@@ -632,8 +905,8 @@ def generar_instancias(semana, resultados_dir, estaticos_dir, cap_mode="pila"):
     # ───────── Exportación ─────────
     out_dir = os.path.join(resultados_dir, "instancias_magdalena", semana)
     os.makedirs(out_dir, exist_ok=True)
-    instancia_path   = os.path.join(out_dir, f"Instancia_{semana}.xlsx")
-    instancia_k_path = os.path.join(out_dir, f"Instancia_{semana}_K.xlsx")
+    instancia_path   = os.path.join(out_dir, f"Instancia_{semana}_{participacion_C}.xlsx")
+    instancia_k_path = os.path.join(out_dir, f"Instancia_{semana}_{participacion_C}_K.xlsx")
 
     with pd.ExcelWriter(instancia_path, engine='openpyxl') as w:
         df_B.to_excel(w, sheet_name='B', index=False)

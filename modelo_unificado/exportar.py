@@ -6,8 +6,9 @@ from pyomo.environ import value
 
 
 def exportar_resultados(
-    model, ctx: dict, *, semana: str,
+    model, ctx: dict, *, semana: str, participacion,
     resultado_xlsx: str, pareto_csv: str | None, pareto_rows: list,
+    chosen_point: dict | None = None, balance_valid: bool = True,
 ):
     os.makedirs(os.path.dirname(resultado_xlsx), exist_ok=True)
 
@@ -67,12 +68,20 @@ def exportar_resultados(
 
     # Resumen
     D_val = float(value(model.D))
-    B_val = float(value(model.B_balance))
+    B_val = float(value(model.B_balance)) if balance_valid else None
+    chosen_type = None
+    chosen_which = None
+    if chosen_point:
+        chosen_type = chosen_point.get("point_type")
+        chosen_which = chosen_point.get("which")
     df_resumen = pd.DataFrame([{
-        "Semana": semana,
+        "Semana": semana, "Participación": participacion,
         "Horas": len(list(model.T)), "Segregaciones": len(list(model.S)),
         "Bloques": len(list(model.B)), "Grúas": len(list(model.G)),
         "D (distancia)": D_val, "B (desbalance)": B_val,
+        "ParetoPointType": chosen_type,
+        "ParetoPointWhich": chosen_which,
+        "BalanceValido": bool(balance_valid),
     }])
 
     with pd.ExcelWriter(resultado_xlsx, engine="openpyxl") as w:

@@ -1,7 +1,6 @@
 import os
 import pandas as pd
 
-
 MODELO = "pipeline"    # "pipeline" / "unificado"
 
 # --- config compartida ---
@@ -12,7 +11,7 @@ USAR_RANGO   = False
 ISO_WEEK_INI = 1
 ISO_WEEK_FIN = 29
 
-CAP_MODE       = "bahia"           # "pila" / "bahia"
+CAP_MODE       = "bahia"        # "pila" / "bahia"
 DIAS_HORIZONTE = 7              # 1 (24h) / 2 (48h) / 7 (168h)
 USAR_KI_FLUJO  = True
     
@@ -154,6 +153,7 @@ def _run_unificado(semanas, resultados):
 
     uconf.DIAS_HORIZONTE   = int(DIAS_HORIZONTE)
     uconf.THETA_DISPERSION = THETA_DISPERSION
+    uconf.ALPHA_K          = ALPHA_K
     print(f"Horizonte: {DIAS_HORIZONTE} día(s) = {uconf.horas_horizonte()} h")
 
     # 1) Instancias unificadas
@@ -162,6 +162,7 @@ def _run_unificado(semanas, resultados):
         generar_instancias_unificado(
             semanas, ANIO,
             resultados, DATOS, cap_mode=CAP_MODE,
+            aux_ki=AUX_KI, umbral_agrupacion=UMBRAL_AGRUPACION,
         )
     else:
         print("\n[1/2] Saltando generación de instancias.")

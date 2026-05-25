@@ -13,10 +13,10 @@ import logging
 import os
 import time
 
-from pyomo.environ import SolverFactory, value
+from pyomo.environ import SolverFactory, Var, value
 from pyomo.opt import SolverStatus, TerminationCondition as TC
 
-from .config import PARETO_ENABLED, PARETO_POINTS, PARETO_PAD, solver_options_for_horizon, solver_timelimit
+from . import config as _cfg
 
 logger = logging.getLogger("unificado")
 
@@ -31,7 +31,19 @@ def _has_incumbent(res, model=None):
     if tc in (TC.optimal, TC.feasible):
         return True
 
-    # Timeout (maxTimeLimit / aborted): hay incumbente solo si hay valores de variables
+    # En timeouts / aborts, confiar primero en el objeto de resultados del solver.
+    # Importante: no basta con mirar valores de variables en Pyomo porque muchas
+    # están inicializadas en cero y eso puede producir falsos "incumbentes".
+    try:
+        if hasattr(res, "solution") and len(res.solution) > 0:
+            return True
+    except Exception:
+        pass
+
+    # Fallback conservador: si no hay soluciones reportadas, considerar que no hay incumbente.
+    if tc in (TC.maxTimeLimit, TC.maxIterations):
+        return False
+
     from pyomo.environ import Var
     try:
         for v in model.component_data_objects(Var, active=True, descend_into=True):
@@ -42,7 +54,7 @@ def _has_incumbent(res, model=None):
     return st in (SolverStatus.ok, SolverStatus.warning)
 
 
-def _solve(model, solver, which: str, use_eps: bool, eps_val=None, *, tee=False):
+def _solve(model, solver, which: str, use_eps: bool, eps_val=None, *, tee=False, warmstart=False):
     model.obj_D.deactivate()
     model.obj_B.deactivate()
     if which == "D":
@@ -60,13 +72,50 @@ def _solve(model, solver, which: str, use_eps: bool, eps_val=None, *, tee=False)
         model.constr_epsD.activate()
 
     t0 = time.perf_counter()
-    res = solver.solve(model, tee=tee, load_solutions=False)
+    res = solver.solve(model, tee=tee, load_solutions=False, warmstart=warmstart)
     # Cargar solución solo si el solver encontró un incumbente; ignorar si no.
     try:
         model.solutions.load_from(res)
     except Exception:
         pass
     return res, time.perf_counter() - t0
+
+
+def _snapshot_nonzero_solution(model):
+    """
+    Guarda una foto ligera de la solución actual usando solo variables no nulas.
+    Esto evita retener millones de ceros cuando queremos re-exportar un punto
+    Pareto distinto del último solve ejecutado.
+    """
+    snap = {}
+    for v in model.component_objects(Var, active=True, descend_into=True):
+        bucket = {}
+        for idx in v:
+            val = v[idx].value
+            if val is not None and abs(float(val)) > 1e-9:
+                bucket[idx] = float(val)
+        if bucket:
+            snap[v.name] = bucket
+    return snap
+
+
+def _restore_nonzero_solution(model, snap):
+    """
+    Restaura una solución previamente guardada. Primero limpia todas las
+    variables activas a cero y luego repone los valores no nulos del snapshot.
+    """
+    vars_by_name = {}
+    for v in model.component_objects(Var, active=True, descend_into=True):
+        vars_by_name[v.name] = v
+        for idx in v:
+            v[idx].set_value(0)
+
+    for name, bucket in snap.items():
+        v = vars_by_name.get(name)
+        if v is None:
+            continue
+        for idx, val in bucket.items():
+            v[idx].set_value(val)
 
 
 def _write_lp_iis(model, out_dir: str, tag: str):
@@ -99,8 +148,8 @@ def resolver_modelo(model, *, semana: str, log_dir: str):
     """Ejecuta el barrido Pareto. Retorna dict con pareto_rows y último res/tiempo."""
     os.makedirs(log_dir, exist_ok=True)
     solver = SolverFactory("gurobi")
-    opts = solver_options_for_horizon()
-    opts["TimeLimit"] = solver_timelimit()
+    opts = _cfg.solver_options_for_horizon()
+    opts["TimeLimit"] = _cfg.solver_timelimit()
     opts["LogFile"]   = os.path.join(log_dir, f"gurobi_log_{semana}.log")
     solver.options.update(opts)
     logger.info("[%s] TimeLimit=%d s  Method=%s  NoRelHeurTime=%s  MIPFocus=%s",
@@ -111,19 +160,30 @@ def resolver_modelo(model, *, semana: str, log_dir: str):
 
     pareto_rows = []
 
-    if not PARETO_ENABLED:
+    if not _cfg.PARETO_ENABLED:
         logger.info("[%s] PARETO desactivado → min B directo", semana)
         res, sec = _solve(model, solver, "B", use_eps=False)
-        if not _has_incumbent(res, model):
-            logger.error("[%s] Sin incumbente (B_only); escribiendo LP+IIS", semana)
+
+        tc = res.solver.termination_condition
+        if tc in (TC.infeasible, TC.infeasibleOrUnbounded, TC.invalidProblem, TC.solverFailure, TC.error):
+            logger.error("[%s] Modelo infactible en B_only; escribiendo LP+IIS", semana)
             _write_lp_iis(model, log_dir, f"{semana}_B_only")
             return {"pareto_rows": [], "res": res, "solve_seconds": sec, "ok": False}
+
+        if not _has_incumbent(res, model):
+            logger.error("[%s] Sin incumbente (B_only); escribiendo LP+IIS", semana)
+            _write_lp_iis(model, log_dir, f"{semana}_B_only_noinc")
+            return {"pareto_rows": [], "res": res, "solve_seconds": sec, "ok": False}
+
         D_x = float(value(model.D)); B_x = float(value(model.B_balance))
+
         logger.info("[%s] Solución única: D=%.3f  B=%.3f  (%.1f s)", semana, D_x, B_x, sec)
         return {
             "pareto_rows": [{"point_type": "single", "which": "B", "eps_D": None,
                              "D_x": D_x, "B_x": B_x, "solve_seconds": sec}],
             "res": res, "solve_seconds": sec, "ok": True,
+            "balance_valid": True,
+            "chosen_point": {"point_type": "single", "which": "B", "D_x": D_x, "B_x": B_x},
         }
 
     # 1) Ancla D_min
@@ -135,37 +195,48 @@ def resolver_modelo(model, *, semana: str, log_dir: str):
         return {"pareto_rows": [], "res": res_D, "solve_seconds": sec_D, "ok": False}
     D_min     = float(value(model.D))
     B_at_Dmin = float(value(model.B_balance))
+    d_snapshot = _snapshot_nonzero_solution(model)
     pareto_rows.append({"point_type": "anchor", "which": "D_min", "eps_D": None,
                         "D_x": D_min, "B_x": B_at_Dmin, "solve_seconds": sec_D})
     logger.info("[%s] Ancla D_min: D=%.3f  B=%.3f  (%.1f s)", semana, D_min, B_at_Dmin, sec_D)
 
+    best_balance_snapshot = None
+    best_balance_point = None
+
     # 2) Ancla B_min
     logger.info("[%s] Pareto 2/3: ancla min-B…", semana)
-    res_B, sec_B = _solve(model, solver, "B", use_eps=False)
-    if not _has_incumbent(res_B, model):
-        logger.error("[%s] No hay incumbente para B_min; usando solo ancla D", semana)
-        return {"pareto_rows": pareto_rows, "res": res_D, "solve_seconds": sec_D, "ok": True}
-    B_min     = float(value(model.B_balance))
-    D_at_Bmin = float(value(model.D))
-    pareto_rows.append({"point_type": "anchor", "which": "B_min", "eps_D": None,
-                        "D_x": D_at_Bmin, "B_x": B_min, "solve_seconds": sec_B})
-    logger.info("[%s] Ancla B_min: B=%.3f  D=%.3f  (%.1f s)", semana, B_min, D_at_Bmin, sec_B)
+    res_B, sec_B = _solve(model, solver, "B", use_eps=False, warmstart=True)
+    has_b_anchor = _has_incumbent(res_B, model)
+    if has_b_anchor:
+        B_min     = float(value(model.B_balance))
+        D_at_Bmin = float(value(model.D))
+        pareto_rows.append({"point_type": "anchor", "which": "B_min", "eps_D": None,
+                            "D_x": D_at_Bmin, "B_x": B_min, "solve_seconds": sec_B})
+        logger.info("[%s] Ancla B_min: B=%.3f  D=%.3f  (%.1f s)", semana, B_min, D_at_Bmin, sec_B)
+        best_balance_snapshot = _snapshot_nonzero_solution(model)
+        best_balance_point = {"point_type": "anchor", "which": "B_min", "D_x": D_at_Bmin, "B_x": B_min}
+    else:
+        logger.warning("[%s] No hay incumbente para B_min; intento barrido ε local desde D_min", semana)
+        D_at_Bmin = None
 
     # 3) Barrido ε
     eps_lo = D_min
-    eps_hi = D_at_Bmin * (1.0 + float(PARETO_PAD))
-    if PARETO_POINTS < 2:
+    if D_at_Bmin is None:
+        eps_hi = D_min * (1.0 + float(_cfg.PARETO_PAD))
+    else:
+        eps_hi = D_at_Bmin * (1.0 + float(_cfg.PARETO_PAD))
+    if _cfg.PARETO_POINTS < 2:
         eps_grid = [eps_hi]
     else:
-        eps_grid = [eps_lo + (eps_hi - eps_lo) * i / (PARETO_POINTS - 1)
-                    for i in range(PARETO_POINTS)]
+        eps_grid = [eps_lo + (eps_hi - eps_lo) * i / (_cfg.PARETO_POINTS - 1)
+                    for i in range(_cfg.PARETO_POINTS)]
 
     logger.info("[%s] Pareto 3/3: barrido ε (%d puntos, D∈[%.2f, %.2f])…",
                 semana, len(eps_grid), eps_lo, eps_hi)
     last_res, last_sec = res_B, sec_B
     ok_sweep = 0
     for j, eps in enumerate(eps_grid, start=1):
-        res_e, sec_e = _solve(model, solver, "B", use_eps=True, eps_val=eps)
+        res_e, sec_e = _solve(model, solver, "B", use_eps=True, eps_val=eps, warmstart=True)
         if not _has_incumbent(res_e, model):
             logger.warning("[%s] ε=%d/%d  eps=%.2f  infactible, sigo", semana, j, len(eps_grid), eps)
             continue
@@ -179,8 +250,30 @@ def resolver_modelo(model, *, semana: str, log_dir: str):
             "slack_epsD": eps - D_x,
             "solve_seconds": sec_e,
         })
+        if best_balance_point is None or B_x < float(best_balance_point["B_x"]):
+            best_balance_snapshot = _snapshot_nonzero_solution(model)
+            best_balance_point = {"point_type": "sweep", "which": "B|epsD", "D_x": D_x, "B_x": B_x}
         last_res, last_sec = res_e, sec_e
 
     logger.info("[%s] Pareto completo: %d puntos totales (%d barrido).",
                 semana, len(pareto_rows), ok_sweep)
-    return {"pareto_rows": pareto_rows, "res": last_res, "solve_seconds": last_sec, "ok": True}
+    if best_balance_snapshot is not None and best_balance_point is not None:
+        _restore_nonzero_solution(model, best_balance_snapshot)
+        return {
+            "pareto_rows": pareto_rows,
+            "res": last_res,
+            "solve_seconds": last_sec,
+            "ok": True,
+            "balance_valid": True,
+            "chosen_point": best_balance_point,
+        }
+
+    _restore_nonzero_solution(model, d_snapshot)
+    return {
+        "pareto_rows": pareto_rows,
+        "res": res_D,
+        "solve_seconds": sec_D,
+        "ok": True,
+        "balance_valid": False,
+        "chosen_point": {"point_type": "anchor", "which": "D_min", "D_x": D_min, "B_x": B_at_Dmin},
+    }

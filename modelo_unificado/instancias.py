@@ -43,8 +43,11 @@ def _resolver_carpeta_estaticos(semana: str, anio: int, criterio: str,
 
 
 def generar_instancias_unificado(
-    semanas: list[str], anio: int,
+    semanas: list[str], criterio: str, anio: int, participacion,
     resultados_dir: str, estaticos_dir: str, *, cap_mode: str = "bahia",
+    cbs_mode: str | None = None,
+    aux_ki: int = 140,
+    umbral_agrupacion: int = 0,
 ):
     """
     Genera archivos `Instancia_{semana}_{p}[_K].xlsx` con granularidad horaria
@@ -65,23 +68,24 @@ def generar_instancias_unificado(
     os.makedirs(magdalena_base, exist_ok=True)
 
     for sem in semanas:
-        print(f"\n(Unificado) ==== Semana {sem}  [cap_mode={cap_mode}] ====")
+        extra = f"  [cbs_mode={cbs_mode}]" if cbs_mode else ""
+        print(f"\n(Unificado) ==== Semana {sem}  [cap_mode={cap_mode}]{extra} ====")
         os.makedirs(os.path.join(magdalena_base, sem), exist_ok=True)
 
         # 1) Análisis de flujos → analisis_flujos_w{sem}_0.xlsx
         run_analysis_flujos(sem, resultados_dir=resultados_dir,
                             estaticos_flujos_dir=estaticos_dir,
-                            debug=False)
+                            criterio_flujos=criterio, debug=False)
 
         # 2) Evolución por turnos → evolucion_turnos_w{sem}.xlsx
         evo_path = os.path.join(magdalena_base, sem, f"evolucion_turnos_w{sem}.xlsx")
         if not os.path.isfile(evo_path):
-            carpeta_est = _resolver_carpeta_estaticos(sem, anio, "criterio_iii", estaticos_dir, semanas)
+            carpeta_est = _resolver_carpeta_estaticos(sem, anio, criterio, estaticos_dir, semanas)
             if carpeta_est is None:
                 print(f"ADVERTENCIA: no encontré estáticos para {sem}.")
             else:
                 try:
-                    criterioII_a_evolucion(sem, carpeta_est, evo_path)
+                    criterioII_a_evolucion(sem, carpeta_est, evo_path, criterio=criterio)
                 except Exception as e:
                     print(f"ADVERTENCIA: falla evolución {sem}: {e}")
 
@@ -89,7 +93,11 @@ def generar_instancias_unificado(
         try:
             _generar_instancia_semana(sem, resultados_dir=resultados_dir,
                                       estaticos_dir=estaticos_dir,
-                                      cap_mode=cap_mode)
+                                      participacion_C=participacion,
+                                      cap_mode=cap_mode,
+                                      cbs_mode=cbs_mode,
+                                      aux_ki=aux_ki,
+                                      umbral_agrupacion=umbral_agrupacion)
         except Exception as e:
             print(f"ADVERTENCIA: falla construir_instancia {sem}: {e}")
             continue
@@ -98,7 +106,7 @@ def generar_instancias_unificado(
         src_dir = os.path.join(magdalena_base, sem)
         dst_dir = os.path.join(out_base, sem)
         for nom in os.listdir(src_dir):
-            if nom.startswith(f"Instancia_{sem}"):
+            if nom.startswith(f"Instancia_{sem}_{participacion}"):
                 os.replace(os.path.join(src_dir, nom), os.path.join(dst_dir, nom))
 
     print("\n(Unificado) ==== Instancias generadas ====")

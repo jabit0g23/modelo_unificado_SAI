@@ -1,6 +1,6 @@
 # Construcción del modelo unificado Pyomo (Magdalena + Camila, horario).
 # Lee Instancia_{semana}_{p}_K.xlsx, trunca T al horizonte y devuelve (model, ctx).
-# THETA_DISPERSION se lee del módulo config (inyectado desde main.py).
+# THETA_DISPERSION y ALPHA_K se leen del módulo config (inyectados desde main.py).
 
 import logging
 import math
@@ -13,9 +13,22 @@ from pyomo.environ import (
 )
 
 from . import config as _cfg
-from .config import VALOR_BASE_R, horas_horizonte, LIMITE_COMBINADO_BT, MAX_RTG_POR_BLOQUE
+from .config import horas_horizonte, MAX_RTG_POR_BLOQUE
 
 logger = logging.getLogger("unificado")
+
+
+def _build_shift_groups(periods) -> list[list[int]]:
+    T_sorted = sorted(int(t) for t in periods)
+    return [T_sorted[i:i + 8] for i in range(0, len(T_sorted), 8)]
+
+
+def _yard_map(blocks):
+    return {
+        'C':  [b for b in blocks if b.startswith('C')],
+        'H':  [b for b in blocks if b.startswith('H')],
+        'TI': [b for b in blocks if b.startswith('T') or b.startswith('I')],
+    }
 
 
 def construir_modelo(df: dict) -> tuple:
@@ -28,6 +41,11 @@ def construir_modelo(df: dict) -> tuple:
     model.B = Set(initialize=df["B"].iloc[:, 0].tolist())
     model.S = Set(initialize=df["S"].iloc[:, 0].tolist())
     model.T = Set(initialize=T_horizonte)
+    shift_groups = _build_shift_groups(T_horizonte)
+    model.TURN = Set(initialize=list(range(1, len(shift_groups) + 1)))
+
+    yard_map = _yard_map(list(model.B))
+    model.YARDS = Set(initialize=list(yard_map.keys()))
 
     segregacion_map = dict(zip(df['S']['S'], df['S']['Segregacion']))
     bloques_orden   = df['B'].iloc[:, 0].tolist()
@@ -69,7 +87,6 @@ def construir_modelo(df: dict) -> tuple:
     logger.info("Subsets TEU/Reefer: S40=%d  S20R=%d  S40R=%d", len(S40), len(S20R), len(S40R))
 
     logger.info("Dispersión: θ=%.2f", _cfg.THETA_DISPERSION)
-    _agregar_parametros_dispersion(model, df, horas)
 
     logger.info("Cargando parámetros Camila…")
     _agregar_parametros_camila(model, df)
@@ -78,7 +95,7 @@ def construir_modelo(df: dict) -> tuple:
     _agregar_variables(model, es_pila)
 
     logger.info("Añadiendo restricciones Magdalena…")
-    _restricciones_magdalena(model, es_pila, S40, S20R, S40R)
+    _restricciones_magdalena(model, es_pila, S40, S20R, S40R, yard_map)
 
     logger.info("Añadiendo restricciones Camila + acople…")
     _restricciones_camila(model)
@@ -97,11 +114,20 @@ def construir_modelo(df: dict) -> tuple:
         "bloque_id_map":   bloque_id_map,
         "seg_id_map":      seg_id_map,
         "horas":           horas,
+        "turn_groups":     shift_groups,
     }
     return model, ctx
 
 
 # --- parámetros ---
+
+def _ki_por_horizonte(df, horas):
+    """Escala KI al horizonte para que todas las restricciones usen la misma base."""
+    ki_raw = df['KI_s'].set_index('S')['KI'].to_dict()
+    if horas < 168:
+        return {s: max(1, int(math.floor(v * horas / 168))) for s, v in ki_raw.items()}
+    return {s: max(1, int(v)) for s, v in ki_raw.items()}
+
 
 def _agregar_parametros_magdalena(model, df, horas):
     model.C   = Param(model.B, initialize=df['C_b'].set_index('B')['C'].to_dict())
@@ -110,13 +136,10 @@ def _agregar_parametros_magdalena(model, df, horas):
 
     # KI calibrado para la semana completa; escalamos al horizonte para evitar
     # infactibilidad cuando horas < 168 (muy poco flujo para cubrir el mínimo semanal).
-    ki_raw = df['KI_s'].set_index('S')['KI'].to_dict()
+    ki_dict = _ki_por_horizonte(df, horas)
     if horas < 168:
-        ki_dict = {s: max(1, int(math.floor(v * horas / 168))) for s, v in ki_raw.items()}
         logger.info("KI escalado al horizonte (%d h): max=%d  media=%.1f",
                     horas, max(ki_dict.values()), sum(ki_dict.values()) / len(ki_dict))
-    else:
-        ki_dict = {s: max(1, int(v)) for s, v in ki_raw.items()}
     model.KI = Param(model.S, initialize=ki_dict)
 
     I0_dict = {(row['S'], row['B']): row['I0'] for _, row in df['I0_sb'].iterrows()}
@@ -154,30 +177,6 @@ def _agregar_parametros_magdalena(model, df, horas):
     OI_dict = {row.B: 1.0 / float(row.C) for _, row in df['C_b'].iterrows()}
     model.OI = Param(model.B, within=NonNegativeReals, initialize=OI_dict)
 
-    # cota laxa p[t]-q[t] ≤ r (solo estabiliza el LP, no entra a la FO)
-    model.r = Param(initialize=VALOR_BASE_R, mutable=True)
-
-
-def _agregar_parametros_dispersion(model, df, horas):
-    S_list = [s for s in df["S"].iloc[:, 0].tolist()]
-    T_list = sorted([int(t) for t in model.T])
-    KI_map = df['KI_s'].set_index('S')['KI'].to_dict()
-    D_rows = df['D_params']
-    D_rows = D_rows[D_rows['T'].astype(int) <= horas]
-    DR_dict = {(r['S'], r['T']): r['DR'] for _, r in D_rows.iterrows()}
-    DC_dict = {(r['S'], r['T']): r['DC'] for _, r in D_rows.iterrows()}
-    DD_dict = {(r['S'], r['T']): r['DD'] for _, r in D_rows.iterrows()}
-    DE_dict = {(r['S'], r['T']): r['DE'] for _, r in D_rows.iterrows()}
-
-    CapBlockI_dict = {}
-    for s in S_list:
-        ki = max(1, int(KI_map[s]))
-        running = 0
-        for t in T_list:
-            running += (int(DR_dict[(s, t)]) - int(DC_dict[(s, t)])
-                        + int(DD_dict[(s, t)]) - int(DE_dict[(s, t)]))
-            CapBlockI_dict[(s, t)] = int(math.ceil(_cfg.THETA_DISPERSION * running / ki)) if running > 0 else running
-    model.CAPBLOCKI = Param(model.S, model.T, initialize=CapBlockI_dict)
 
 
 def _agregar_sets_camila(model, df):
@@ -256,8 +255,8 @@ def _agregar_variables(model, es_pila: bool):
 
     model.i = Var(model.S, model.B, model.T, domain=NonNegativeIntegers, initialize=0)
     model.w = Var(model.B,          model.T, domain=NonNegativeIntegers, initialize=0)
-    model.p = Var(                   model.T, domain=NonNegativeIntegers, initialize=0)
-    model.q = Var(                   model.T, domain=NonNegativeIntegers, initialize=0)
+    model.p = Var(model.YARDS,      model.T, domain=NonNegativeIntegers, initialize=0)
+    model.q = Var(model.YARDS,      model.T, domain=NonNegativeIntegers, initialize=0)
 
     if es_pila:
         model.g20 = Var(model.B, model.T, domain=NonNegativeIntegers, initialize=0)
@@ -272,16 +271,43 @@ def _agregar_variables(model, es_pila: bool):
     model.aRTG      = Var(model.B, model.T,          domain=Binary, initialize=0)
     model.aRS       = Var(model.B, model.T,          domain=Binary, initialize=0)
 
+    # Capacidad operativa turnal endógena (análogo al rol de Cbs en Camila)
+    model.v_turn_curr = Var(model.S, model.B, model.TURN, domain=NonNegativeIntegers, initialize=0)
+    model.v_peak_turn = Var(model.S, model.B, model.TURN, domain=NonNegativeIntegers, initialize=0)
+    model.cap_turn    = Var(model.S, model.B, model.TURN, domain=NonNegativeIntegers, initialize=0)
+
 
 # --- restricciones Magdalena ---
 
-def _restricciones_magdalena(model, es_pila: bool, S40, S20R, S40R):
-    # dispersión
-    def rule_inv(m, s, b, t):
-        if m.CAPBLOCKI[s, t] <= 0:
-            return Constraint.Skip
-        return m.i[s, b, t] - m.I0[s, b] <= m.CAPBLOCKI[s, t]
-    model.constraint_dispersion_inventario = Constraint(model.S, model.B, model.T, rule=rule_inv)
+def _restricciones_magdalena(model, es_pila: bool, S40, S20R, S40R, yard_map):
+    # dispersión θ-flujo (igual que pipeline)
+    T_sorted_d = sorted(model.T)
+    cum_entrada, cum_salida = {}, {}
+    for s in model.S:
+        acc_in, acc_out = 0, 0
+        for t in T_sorted_d:
+            acc_in  += value(model.DR[s, t]) + value(model.DD[s, t])
+            acc_out += value(model.DC[s, t]) + value(model.DE[s, t])
+            cum_entrada[s, t] = acc_in
+            cum_salida[s, t]  = acc_out
+    model.constraint_disp_entrada = ConstraintList()
+    model.constraint_disp_salida  = ConstraintList()
+    for s in model.S:
+        ki = max(1, int(value(model.KI[s])))
+        for b in model.B:
+            i0_sb = int(value(model.I0[s, b]))
+            for idx, t in enumerate(T_sorted_d):
+                periodos = T_sorted_d[:idx + 1]
+                rhs_in = math.ceil(_cfg.THETA_DISPERSION * cum_entrada[s, t] / ki)
+                if rhs_in > 0:
+                    model.constraint_disp_entrada.add(
+                        sum(model.fr[s, b, tau] + model.fd[s, b, tau] for tau in periodos) <= rhs_in
+                    )
+                rhs_out = math.ceil(_cfg.THETA_DISPERSION * cum_salida[s, t] / ki) + i0_sb
+                if rhs_out > 0:
+                    model.constraint_disp_salida.add(
+                        sum(model.fc[s, b, tau] + model.fe[s, b, tau] for tau in periodos) <= rhs_out
+                    )
 
     # Pares de 40' (pila)
     if es_pila:
@@ -320,16 +346,27 @@ def _restricciones_magdalena(model, es_pila: bool, S40, S20R, S40R):
                 )
 
     # (5-8) Balance de flujos por demanda
+    # En el pipeline secuencial de Camila, recibir/export y entregar/import
+    # se fijan por total de turno (8h), mientras cargar/descargar se fijan por hora.
     model.constraint_5 = ConstraintList()
     model.constraint_6 = ConstraintList()
     model.constraint_7 = ConstraintList()
     model.constraint_8 = ConstraintList()
+    shift_groups = _build_shift_groups(model.T)
+    for s in model.S:
+        for group in shift_groups:
+            model.constraint_5.add(
+                sum(model.fr[s, b, t] for b in model.B for t in group)
+                == sum(model.DR[s, t] for t in group)
+            )
+            model.constraint_8.add(
+                sum(model.fe[s, b, t] for b in model.B for t in group)
+                == sum(model.DE[s, t] for t in group)
+            )
     for t in model.T:
         for s in model.S:
-            model.constraint_5.add(sum(model.fr[s, b, t] for b in model.B) == model.DR[s, t])
             model.constraint_6.add(sum(model.fc[s, b, t] for b in model.B) == model.DC[s, t])
             model.constraint_7.add(sum(model.fd[s, b, t] for b in model.B) == model.DD[s, t])
-            model.constraint_8.add(sum(model.fe[s, b, t] for b in model.B) == model.DE[s, t])
 
     # (9-10) Activación de y unificada (3 ecuaciones, match pipeline)
     _activacion_y(model)
@@ -356,7 +393,7 @@ def _restricciones_magdalena(model, es_pila: bool, S40, S20R, S40R):
     for s in model.S:
         model.constraint_14.add(model.k[s] == sum(model.u[s, b] for b in model.B))
 
-    # (16) Cota inferior KI, respetando segregaciones muertas
+    # (16) Cota inferior KI y cota superior adaptativa, respetando segregaciones muertas
     model.constraint_16 = ConstraintList()
     for s in model.S:
         entradas_totales   = sum(model.DR[s, t] + model.DD[s, t] for t in model.T)
@@ -365,13 +402,18 @@ def _restricciones_magdalena(model, es_pila: bool, S40, S20R, S40R):
             model.constraint_16.add(model.k[s] == 0)
         else:
             model.constraint_16.add(model.k[s] >= model.KI[s])
+            n_bloques_I0 = sum(1 for b in model.B if value(model.I0[s, b]) > 0)
+            cota_sup = max(int(value(model.KI[s])), n_bloques_I0) + _cfg.ALPHA_K
+            model.constraint_16.add(model.k[s] <= cota_sup)
 
-    # (17-20) Workload y desbalance p/q
+    # (17-19) Workload y desbalance p/q por patio
+    block_to_yard = {b: j for j, blocks_j in yard_map.items() for b in blocks_j}
     model.constraint_17 = ConstraintList()
     model.constraint_18 = ConstraintList()
     model.constraint_19 = ConstraintList()
     for t in model.T:
         for b in model.B:
+            j = block_to_yard[b]
             model.constraint_17.add(
                 model.w[b, t] == sum(
                     model.fr[s, b, t] + model.fc[s, b, t]
@@ -379,12 +421,8 @@ def _restricciones_magdalena(model, es_pila: bool, S40, S20R, S40R):
                     for s in model.S
                 )
             )
-            model.constraint_18.add(model.p[t] >= model.w[b, t])
-            model.constraint_19.add(model.q[t] <= model.w[b, t])
-
-    model.constraint_20 = ConstraintList()
-    for t in model.T:
-        model.constraint_20.add(model.p[t] - model.q[t] <= model.r)
+            model.constraint_18.add(model.p[j, t] >= model.w[b, t])
+            model.constraint_19.add(model.q[j, t] <= model.w[b, t])
 
     # Reefer (pila) / VSR (bahía)
     if es_pila:
@@ -414,6 +452,16 @@ def _activacion_y(model):
     model.constraint_10      = ConstraintList()
 
     T_sorted = sorted(model.T)
+    shift_groups = _build_shift_groups(model.T)
+    turn_total_dr = {}
+    turn_total_de = {}
+    for s in model.S:
+        for group in shift_groups:
+            total_dr = sum(value(model.DR[s, t]) for t in group)
+            total_de = sum(value(model.DE[s, t]) for t in group)
+            for t in group:
+                turn_total_dr[(s, t)] = total_dr
+                turn_total_de[(s, t)] = total_de
 
     for s in model.S:
         # Big-M: inventario inicial total de s en el terminal
@@ -432,8 +480,8 @@ def _activacion_y(model):
                 model.constraint_9_flujo.add(
                     model.fr[s, b, t] + model.fc[s, b, t]
                     + model.fd[s, b, t] + model.fe[s, b, t]
-                    <= (model.DR[s, t] + model.DC[s, t]
-                        + model.DD[s, t] + model.DE[s, t]) * model.y[s, b, t]
+                    <= (turn_total_dr[(s, t)] + model.DC[s, t]
+                        + model.DD[s, t] + turn_total_de[(s, t)]) * model.y[s, b, t]
                 )
                 model.constraint_9_inv.add(
                     model.i[s, b, t]
@@ -479,6 +527,98 @@ def _restricciones_camila(model):
         return m.i[s, b, t] <= m.Cbs[b, s]
     model.cap_seg = Constraint(model.B, model.S, model.T, rule=cap_seg_rule)
 
+    # Capacidad operativa turnal endógena:
+    # replica el rol lógico de Cbs sin importar el valor secuencial postproceso.
+    shift_groups = _build_shift_groups(model.T)
+    model.turn_peak_current = ConstraintList()
+    model.turn_peak_previous = ConstraintList()
+    model.turn_peak_active = ConstraintList()
+    model.turn_curr_current = ConstraintList()
+    model.turn_curr_active = ConstraintList()
+    model.turn_curr_block_cap = ConstraintList()
+    model.turn_curr_reefer_cap = ConstraintList()
+    model.turn_cap_struct = ConstraintList()
+    model.turn_cap_from_peak = ConstraintList()
+    model.turn_cap_i0_floor = ConstraintList()
+    model.turn_cap_cover_current = ConstraintList()
+    model.turn_cap_cover_previous = ConstraintList()
+    model.turn_inventory_cap = ConstraintList()
+
+    for r, group in enumerate(shift_groups, start=1):
+        prev_group = shift_groups[r - 2] if r > 1 else []
+        for s in model.S:
+            teu_s = int(value(model.TEU[s]))
+            teu_slack = max(0, teu_s - 1)
+            for b in model.B:
+                # Ocupación relevante del turno actual (sin memoria del turno previo).
+                for t in group:
+                    model.turn_curr_current.add(
+                        model.v_turn_curr[s, b, r] >= model.v[s, b, t]
+                    )
+                model.turn_curr_active.add(
+                    model.v_turn_curr[s, b, r] <= model.VS[b] * model.u[s, b]
+                )
+
+                # Peor caso entre turno actual y turno previo.
+                for t in group:
+                    model.turn_peak_current.add(
+                        model.v_peak_turn[s, b, r] >= model.v[s, b, t]
+                    )
+                for t_prev in prev_group:
+                    model.turn_peak_previous.add(
+                        model.v_peak_turn[s, b, r] >= model.v[s, b, t_prev]
+                    )
+
+                # Si el bloque no se usa para la segregación, la ocupación pico del turno debe apagarse.
+                model.turn_peak_active.add(
+                    model.v_peak_turn[s, b, r] <= model.VS[b] * model.u[s, b]
+                )
+
+                # La capacidad turnal no puede exceder la cota estructural del bloque-segregación.
+                model.turn_cap_struct.add(
+                    model.cap_turn[s, b, r] <= model.Cbs[b, s]
+                )
+
+                # Conversión de ocupación pico a capacidad operativa en contenedores.
+                # Para TEU=1: cap <= C*OS*v_peak
+                # Para TEU=2: cap <= ceil(C*OS*v_peak / 2)
+                model.turn_cap_from_peak.add(
+                    teu_s * model.cap_turn[s, b, r]
+                    <= model.C[b] * model.OS * model.v_peak_turn[s, b, r] + teu_slack
+                )
+
+                # En el primer turno, al menos debe caber el inventario inicial heredado.
+                if r == 1:
+                    model.turn_cap_i0_floor.add(
+                        model.cap_turn[s, b, r] >= model.I0[s, b]
+                    )
+
+                # La capacidad operativa del turno debe cubrir el pico de inventario
+                # observado en el turno actual y en el turno previo.
+                for t in group:
+                    model.turn_cap_cover_current.add(
+                        model.cap_turn[s, b, r] >= model.i[s, b, t]
+                    )
+                for t_prev in prev_group:
+                    model.turn_cap_cover_previous.add(
+                        model.cap_turn[s, b, r] >= model.i[s, b, t_prev]
+                    )
+
+                # Toda hora del turno queda acotada por la capacidad operativa del turno.
+                for t in group:
+                    model.turn_inventory_cap.add(
+                        model.i[s, b, t] <= model.cap_turn[s, b, r]
+                    )
+
+        # Reserva de espacio solo para el turno actual.
+        for b in model.B:
+            model.turn_curr_block_cap.add(
+                sum(model.v_turn_curr[s, b, r] * model.TEU[s] for s in model.S) <= model.VS[b]
+            )
+            model.turn_curr_reefer_cap.add(
+                sum(model.v_turn_curr[s, b, r] * model.R[s] for s in model.S) <= model.VSR[b]
+            )
+
     # Conteo de grúas por tipo por (b,t)
     model.count_rtg = Constraint(model.B, model.T,
         rule=lambda m, b, t: m.nRTG[b, t] == sum(m.ygbt[g, b, t] for g in m.GRT))
@@ -493,9 +633,9 @@ def _restricciones_camila(model):
     model.total_rtg = Constraint(model.T, rule=lambda m, t: sum(m.nRTG[b, t] for b in m.B) <= m.RmaxRTG)
     model.total_rs  = Constraint(model.T, rule=lambda m, t: sum(m.nRS[b, t]  for b in m.B) <= m.RmaxRS)
 
-    # Colisiones: 2·RTG + RS ≤ LIMITE
+    # Colisiones locales: la capacidad simultánea ponderada depende del bloque.
     model.limit_combinado = Constraint(model.B, model.T,
-        rule=lambda m, b, t: 2 * m.nRTG[b, t] + m.nRS[b, t] <= LIMITE_COMBINADO_BT)
+        rule=lambda m, b, t: 2 * m.nRTG[b, t] + m.nRS[b, t] <= m.Wb[b])
 
     # Máx RTG por bloque
     model.max_rtg_block = Constraint(model.B, model.T,
@@ -527,14 +667,15 @@ def _restricciones_camila(model):
                     if int(value(model.CBS[b1, b2])) == 0:
                         model.compat_rs.add(model.aRS[b1, t] + model.aRS[b2, t] <= 1)
 
-    # Vínculo Z ↔ y (global)
+    T_sorted = sorted(model.T)
+
+    # Vínculo Z ↔ y en todo el horizonte
     model.Z_y_up = ConstraintList()
     model.y_Z_up = ConstraintList()
-    T_len = len(model.T)
     for g in model.G:
         for b in model.B:
             model.Z_y_up.add(model.Z_gb[g, b] <= sum(model.ygbt[g, b, t] for t in model.T))
-            model.y_Z_up.add(sum(model.ygbt[g, b, t] for t in model.T) <= model.Z_gb[g, b] * T_len)
+            model.y_Z_up.add(sum(model.ygbt[g, b, t] for t in model.T) <= model.Z_gb[g, b] * len(T_sorted))
 
     # Exclusividad entre bloques: neutral (EX) + RTG-específica (EX_RTG)
     model.excl_base = ConstraintList()
@@ -551,15 +692,14 @@ def _restricciones_camila(model):
                     model.excl_rtg.add(model.Z_gb[g, b1] + model.Z_gb[g, b2] <= model.EX_RTG[b1, b2])
 
     # Permanencia mínima K_g (lb/lb1/ub/ub1 + alpha_nosolapa)
-    T_sorted = sorted(model.T)
-    T_max    = T_sorted[-1]
-    T_min    = T_sorted[0]
+    T_min = T_sorted[0]
+    T_max = T_sorted[-1]
 
     def lb_rule(m, g, b, t):
         Kg = int(value(m.Kg[g]))
         if t <= T_max - Kg + 1:
             return Kg * m.alpha_gbt[g, b, t] <= sum(
-                m.ygbt[g, b, r] for r in m.T if t <= r < t + Kg
+                m.ygbt[g, b, tau] for tau in m.T if t <= tau < t + Kg
             )
         return Constraint.Skip
     model.lb_constraint = Constraint(model.G, model.B, model.T, rule=lb_rule)
@@ -568,7 +708,7 @@ def _restricciones_camila(model):
         Kg = int(value(m.Kg[g]))
         if t > T_max - Kg + 1:
             return (T_max - t + 1) * m.alpha_gbt[g, b, t] <= sum(
-                m.ygbt[g, b, r] for r in m.T if r >= t
+                m.ygbt[g, b, tau] for tau in m.T if tau >= t
             )
         return Constraint.Skip
     model.lb1_constraint = Constraint(model.G, model.B, model.T, rule=lb1_rule)
@@ -579,32 +719,41 @@ def _restricciones_camila(model):
         return Constraint.Skip
     model.ub_constraint = Constraint(model.G, model.B, model.T, rule=ub_rule)
 
-    model.ub1_constraint = Constraint(model.G, model.B,
-        rule=lambda m, g, b: m.ygbt[g, b, T_min] <= m.alpha_gbt[g, b, T_min])
+    model.ub1_constraint = ConstraintList()
+    for g in model.G:
+        for b in model.B:
+            model.ub1_constraint.add(model.ygbt[g, b, T_min] <= model.alpha_gbt[g, b, T_min])
 
     model.alpha_nosolapa = ConstraintList()
     for g in model.G:
         Kg = int(value(model.Kg[g]))
         for b in model.B:
             for t in model.T:
-                for r in model.T:
-                    if t < r < t + Kg:
-                        model.alpha_nosolapa.add(model.alpha_gbt[g, b, t] <= 1 - model.alpha_gbt[g, b, r])
+                for tau in model.T:
+                    if t < tau < min(t + Kg, T_max + 1):
+                        model.alpha_nosolapa.add(model.alpha_gbt[g, b, t] <= 1 - model.alpha_gbt[g, b, tau])
 
 
 # --- objetivos (ε-constraint) ---
 
 def _definir_objetivos(model):
+    # Penalización léxica mínima: evita que la capacidad turnal quede flotando
+    # sin alterar materialmente el objetivo principal de balance.
+    eps_turn_cap = 1e-6
+
     model.D = Expression(rule=lambda m: (
         sum(m.fc[s, b, t] * m.LC[s, b] for b in m.B for s in m.S for t in m.T)
         + sum(m.fe[s, b, t] * m.LE[b] for b in m.B for s in m.S for t in m.T)
     ))
-    model.B_balance = Expression(rule=lambda m: sum(m.p[t] - m.q[t] for t in m.T))
+    model.B_balance = Expression(rule=lambda m: sum(m.p[j, t] - m.q[j, t] for j in m.YARDS for t in m.T))
+    model.turn_cap_penalty = Expression(
+        rule=lambda m: sum(m.cap_turn[s, b, r] for s in m.S for b in m.B for r in m.TURN)
+    )
 
     model.constr_epsD = Constraint(expr=model.D <= model.eps_D)
     model.constr_epsD.deactivate()
 
     model.obj_D = Objective(expr=model.D,         sense=minimize)
-    model.obj_B = Objective(expr=model.B_balance, sense=minimize)
+    model.obj_B = Objective(expr=model.B_balance + eps_turn_cap * model.turn_cap_penalty, sense=minimize)
     model.obj_D.deactivate()
     model.obj_B.deactivate()

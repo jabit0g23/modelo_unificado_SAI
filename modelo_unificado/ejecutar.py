@@ -21,6 +21,7 @@ logging.basicConfig(
 
 def ejecutar_instancias_unificado(
     semanas: list[str],
+    participacion,
     resultados_dir: str,
     *,
     usar_ki_flujo: bool = True,
@@ -47,13 +48,13 @@ def ejecutar_instancias_unificado(
         sem_dir_res  = os.path.join(resultados_base, semana)
         os.makedirs(sem_dir_res, exist_ok=True)
 
-        archivo = os.path.join(sem_dir_inst, f"Instancia_{semana}{sufijo_k}.xlsx")
+        archivo = os.path.join(sem_dir_inst, f"Instancia_{semana}_{participacion}{sufijo_k}.xlsx")
         if not os.path.exists(archivo):
             print(f"ADVERTENCIA: no se encontró {archivo}. Salto semana.")
             continue
 
-        resultado_xlsx = os.path.join(sem_dir_res, f"resultado_{semana}_Unificado.xlsx")
-        pareto_csv     = os.path.join(sem_dir_res, f"pareto_{semana}.csv")
+        resultado_xlsx = os.path.join(sem_dir_res, f"resultado_{semana}_{participacion}_Unificado.xlsx")
+        pareto_csv     = os.path.join(sem_dir_res, f"pareto_{semana}_{participacion}.csv")
 
         try:
             logger.info("[%s] Leyendo instancia: %s", semana, os.path.basename(archivo))
@@ -79,17 +80,21 @@ def ejecutar_instancias_unificado(
             logger.info("[%s] Exportando resultados…", semana)
             exportar_resultados(
                 model, ctx,
-                semana=semana,
+                semana=semana, participacion=participacion,
                 resultado_xlsx=resultado_xlsx,
                 pareto_csv=pareto_csv,
                 pareto_rows=out["pareto_rows"],
+                chosen_point=out.get("chosen_point"),
+                balance_valid=out.get("balance_valid", True),
             )
 
             meta = {
                 "modelo": "unificado", "semana": semana,
-                "horas": ctx["horas"], "build_seconds": build_sec,
+                "participacion": str(participacion), "horas": ctx["horas"],
+                "build_seconds": build_sec,
             }
-            obj_val = objective_value_safe(model, obj_name="obj_B")
+            obj_val = (objective_value_safe(model, obj_name="obj_B")
+                       if out.get("balance_valid", True) else None)
             row = telemetry_pack(model, meta=meta,
                                  solve_elapsed=out["solve_seconds"],
                                  res=out["res"], objective=obj_val)

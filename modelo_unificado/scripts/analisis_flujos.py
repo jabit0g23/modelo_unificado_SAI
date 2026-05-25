@@ -14,7 +14,7 @@ MODO_TODO_ENTRA = False
 FILTRA_IME = True  # OFF => pasan TODOS los IME
 
 
-def run_analysis_flujos(semana, resultados_dir, estaticos_flujos_dir, criterio_flujos="criterio_iii", debug=True):
+def run_analysis_flujos(semana, resultados_dir, estaticos_flujos_dir, criterio_flujos="criterio_ii", debug=True):
     """Pipeline de análisis de flujos:
     - Lee y normaliza IME/tiempos dentro de la semana.
     - Filtra por categoría y, según flags, por prefijos/IME.

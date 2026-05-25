@@ -2,7 +2,7 @@ import os, glob
 import pandas as pd
 from collections import defaultdict
 
-def criterioII_a_evolucion(semana, input_path, output_file, criterio="criterio_iii"):
+def criterioII_a_evolucion(semana, input_path, output_file, criterio="criterio_ii"):
     """
     Lee archivos CriterioII-YYYY-MM-DD_{turno}.csv (turnos = 08-00, 15-30, 23-00)
     y genera un Excel "evolucion_turnos_w{semana}.xlsx" con varias hojas:
